@@ -110,8 +110,8 @@ in the Instantly workspace is uploaded; no lookup or upload is ever paid for or 
   `POST /leads/add`, and refuses `/leads/add` without a `list_id` or with any `campaign` reference.
   NO campaigns, sequences, copy, senders, schedules, activation or sending — those endpoints are unreachable.
 - Foundation is Eric's `/list-builder`, `/list-expander`, `/icp-prompt-builder` and
-  `/list-quality-scorecard`. Do NOT read from or write to GTM OS, Campaign Builder, the
-  mind-map/understanding model, or any earlier Kept research orchestration.
+  `/list-quality-scorecard`. This skill reads only the campaign tab and its own run folder; it does not
+  read from or write to any other system.
 - Providers: Parallel.ai (discovery + research), Quick Enrich (people + emails), OpenAI
   `gpt-5-nano` for Eric's ICP judge. No Prospeo, GetLeads, Blitz, Exa, Apify.
 - **Eric's files are never edited.** `git status` in the repo must show only `skills/kept-research/`.
