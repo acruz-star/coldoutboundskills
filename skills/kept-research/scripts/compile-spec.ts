@@ -14,17 +14,49 @@
  *
  * No network, no paid calls.
  */
-import { writeFileSync, mkdirSync, copyFileSync, existsSync, readFileSync } from "fs";
+import { writeFileSync, mkdirSync, copyFileSync, existsSync, readFileSync, readdirSync, renameSync } from "fs";
+import { homedir } from "os";
 import { join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { parseArgs, readCsv, writeCsv, normDomain } from "../../list-expander/scripts/lib";
-import { loadSpec, runDirFor } from "./kept-lib";
+import { loadSpec, runDirFor, CampaignSpec } from "./kept-lib";
+
+/** FRESH-COMPILE GUARD. The selected tab is the only source of truth for a new compile. An operator
+ *  clarification, recipient fallback, threshold or rule given for an EARLIER run must never seed this one
+ *  unless the operator gives or approves it again (then it is recorded as "RE-APPROVED <date>: …").
+ *  Detection: a clarification string that appears verbatim in another run folder's spec is inherited. */
+export function inheritedClarifications(spec: CampaignSpec, thisRunDir: string): { text: string; from: string }[] {
+  const mine = (spec.source as any).operator_clarifications ?? [];
+  if (!mine.length) return [];
+  const lanes = join(homedir(), "output", "list-builder", "lanes");
+  const hits: { text: string; from: string }[] = [];
+  for (const d of existsSync(lanes) ? readdirSync(lanes) : []) {
+    const other = join(lanes, d, "spec", "campaign-spec.json");
+    if (resolve(join(lanes, d)) === resolve(thisRunDir) || !existsSync(other)) continue;
+    let prev: any; try { prev = JSON.parse(readFileSync(other, "utf8")); } catch { continue; }
+    if (prev.source?.tab_sha256 === spec.source.tab_sha256) continue; // same tab, same campaign: a resume, not a fresh compile
+    for (const c of prev.source?.operator_clarifications ?? []) for (const m of mine) if (!/^RE-APPROVED \d{4}-\d{2}-\d{2}:/.test(m) && m.trim() === String(c).trim()) hits.push({ text: m, from: d });
+  }
+  return hits;
+}
 
 export function compile(specPath: string): { runDir: string; laneJson: string; specCopy: string; promptPath: string; parallelCandidates: string } {
   const spec = loadSpec(specPath);
   const runDir = runDirFor(spec);
   const specDir = join(runDir, "spec");
+  const inherited = inheritedClarifications(spec, runDir);
+  if (inherited.length) {
+    console.error("STOP — this spec carries operator clarifications inherited from a previous run, not given for this one:\n" +
+      inherited.map((h) => `  - "${h.text.slice(0, 120)}"  (from run ${h.from})`).join("\n") +
+      "\nA fresh compile uses only the selected campaign tab. Remove them, or have the operator approve them again for this run and record each as \"RE-APPROVED <YYYY-MM-DD>: <text>\".");
+    process.exit(2);
+  }
+  // A spec dir left by a DIFFERENT tab under the same campaign slug is a previous campaign: keep it for audit, never reuse it.
+  const prevSpec = join(specDir, "campaign-spec.json");
+  if (existsSync(prevSpec) && resolve(specPath) !== resolve(prevSpec)) {
+    try { const prev = JSON.parse(readFileSync(prevSpec, "utf8")); if (prev.source?.tab_sha256 !== spec.source.tab_sha256) { const aside = join(runDir, `spec-prev-${String(prev.source?.tab_sha256 ?? "unknown").slice(0, 12)}`); renameSync(specDir, aside); console.log(`previous spec for a different tab set aside for audit (not reused): ${aside}`); } } catch { /* unreadable: leave it */ }
+  }
   mkdirSync(specDir, { recursive: true });
   const specCopy = join(specDir, "campaign-spec.json");
   if (resolve(specPath) !== resolve(specCopy)) copyFileSync(specPath, specCopy);

@@ -200,7 +200,14 @@ format itself is unchanged; this is only how the tab's information is used.
   assume a company type (not "operating business", not "real company", nothing) beyond what the tab states ·
   NO date window unless the tab gives one — never invent "last 90 days" or any other recency cutoff.
 - Transcribe, do not invent. Every field, rule, threshold and variable must trace to words in the tab or a
-  default above. Record any operator answer in `source.operator_clarifications[]`.
+  default above. Record any operator answer given IN THIS RUN in `source.operator_clarifications[]`.
+- **Fresh compile = the selected tab only.** Do not open previous run folders, previous specs (in the run
+  folders, the scratchpad or anywhere else), memory notes or earlier conversation turns to seed a new
+  compile. Operator clarifications, recipient fallbacks, thresholds and campaign-specific rules from an
+  earlier run are NOT inherited, even for the same campaign name. Old runs keep their specs for audit only.
+  A previous clarification may be reused only when the operator gives or approves it again for this run; then
+  record it as `RE-APPROVED <YYYY-MM-DD>: <text>`. `compile-spec.ts` stops if it finds a clarification copied
+  verbatim from another run's spec.
 
 ### Step 3 — Run (one command, in the background)
 
