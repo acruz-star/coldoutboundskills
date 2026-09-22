@@ -6,18 +6,23 @@
  *
  *     npx tsx skills/kept-research/scripts/tests/parallel-search-discover.test.ts
  *
- * Covers the offline scenarios from the Search-API migration spec:
+ * Covers the offline scenarios from the Search-API migration spec, plus the 2026-09-22 hardening pass:
  *   A. mixed Search results (LinkedIn / company-news / Reddit) → candidate + evidence records
  *   B. a social result names a company but not its domain → domain-resolution picks the canonical one
  *   C. Search evidence already proves a required fact → gapFields asks for nothing more
  *   D. resume: a completed search-job hash is never re-submitted
  *   E. poor first-round yield → the planner prompt carries the yield so round 2 must differ
  *   F. the candidate feed stays byte-compatible with Eric's MERGE feed (parallel-discover.ts's FEED_COLS)
+ *   G. the search planner sees ONLY the Signal/s objective + match_conditions — never research_brief,
+ *      signal field names, titles, rules, recipient logic, or ICP/industry/segment language
+ *   H. research exhaustion is decided on PLANNER-WAVE totals, never on individual search-job yields
+ *   I. company_domain is accepted only when grounded in the cited Search result itself — never a
+ *      model-invented domain, and domain resolution never resolves to an unrelated/similarly-named site
  */
 import {
   searchJobHash, parsePlannerResponse, plannerPrompt, parseExtractionResponse, applyExtracted,
-  applyDomainResolution, pickOfficialDomainFromResults, stateToFeed, newDiscoveryState, researchExhausted,
-  FEED_COLS, type SearchResult,
+  applyDomainResolution, pickOfficialDomainFromResults, domainGroundedInResult, stateToFeed,
+  newDiscoveryState, researchExhausted, FEED_COLS, type SearchResult, type DiscoverySignal,
 } from "../parallel-search-discover";
 import { gapFields } from "../kept-lib";
 import type { CampaignSpec } from "../kept-lib";
@@ -31,9 +36,9 @@ const spec: CampaignSpec = {
   source: { doc_id: "doc1", doc_title: "Test Doc", tab: "Retire Test", read_at: "2026-09-22T00:00:00Z", tab_sha256: "abc" },
   reference_date: "2026-09-22",
   companies: {
-    icp: "Any company: the tab sets no industry or segment restriction",
-    qualifies: ["Any company that the signal is about"],
-    disqualifies: ["None stated by the campaign"],
+    icp: "Family-owned home services businesses (plumbing, HVAC, electrical)",
+    qualifies: ["Company operates in residential home services"],
+    disqualifies: ["Publicly traded companies", "Companies with 500+ employees"],
     discovery: { objective: "a named small-business owner recently announced retirement or a business sale", match_conditions: [{ name: "retirement_signal", description: "a named owner has publicly announced retirement or intent to sell the business" }], entity_type: "companies" },
     exclude_domains: [],
   },
@@ -44,7 +49,7 @@ const spec: CampaignSpec = {
       { name: "retirement_announced_at", type: "date", description: "The date the retirement/sale was announced." },
     ],
   },
-  people: { recipient: { from_field: "retiree_name", titles: [], find_email: true }, find_email: true },
+  people: { recipient: { from_field: "retiree_name", titles: ["general manager", "chief operating officer"], find_email: true }, find_email: true },
   rules: [{ id: "r1", description: "must have a named retiree", field: "signals.retiree_name", op: "exists", on_fail: "REVIEW", on_unknown: "REVIEW" }],
   variables: [],
   targets: { qualified_leads: 50, max_companies: 1000, source: "test" },
@@ -153,14 +158,12 @@ const spec: CampaignSpec = {
     { queries: ["small business owner retiring"], include_domains: [], rationale: "broad open-web pass", new_candidates: 1, source_hosts: ["prnewswire.com"] },
     { queries: ["family business sale announcement"], include_domains: [], rationale: "wire-service framing", new_candidates: 0, source_hosts: [] },
   ];
-  const { user } = plannerPrompt(spec, weakHistory, { uniqueCount: 1, qualifiedCount: 0, target: 50 });
+  const signal: DiscoverySignal = { objective: spec.companies.discovery!.objective, match_conditions: spec.companies.discovery!.match_conditions };
+  const { user } = plannerPrompt(signal, weakHistory, { uniqueCount: 1, qualifiedCount: 0, target: 50 });
   assert(user.includes("small business owner retiring"), "E: the prompt shows the exact tried queries");
   assert(user.includes("1 new candidate"), "E: the prompt shows the observed yield per tactic");
   assert(!/\bAngle\b/.test(user) && !/\bTitle\(s\)\b/.test(user), "E: the planner is never shown Angle or Title(s) — signal only");
   assert(user.includes("materially different"), "E: weak yield explicitly instructs materially different tactics next round");
-  eq(researchExhausted([1, 0]), false, "E: two weak waves alone is not yet exhaustion (needs 3+ waves)");
-  eq(researchExhausted([1, 0, 0]), true, "E: three waves with the last two near-zero IS exhaustion");
-  eq(researchExhausted([1, 5, 6]), false, "E: healthy yield is never exhausted");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -168,6 +171,102 @@ const spec: CampaignSpec = {
 // ---------------------------------------------------------------------------------------------
 {
   eq(FEED_COLS, ["domain", "name", "description", "source", "findall_candidate_id"], "F: FEED_COLS unchanged from the legacy FindAll feed shape Eric's MERGE (extra_candidates) expects");
+}
+
+// ---------------------------------------------------------------------------------------------
+// G. the search planner is Signal/s-ONLY — structurally, not just by convention
+// ---------------------------------------------------------------------------------------------
+{
+  const signal: DiscoverySignal = { objective: spec.companies.discovery!.objective, match_conditions: spec.companies.discovery!.match_conditions };
+  eq(Object.keys(signal).sort(), ["match_conditions", "objective"], "G: plannerPrompt's input type carries ONLY objective + match_conditions — no path to pass research_brief/fields/titles/rules even by mistake");
+
+  const { system, user } = plannerPrompt(signal, [], { uniqueCount: 0, qualifiedCount: 12, target: 50 });
+  const combined = `${system}\n${user}`;
+  const FORBIDDEN = [
+    spec.signals.research_brief,                        // research_brief text itself
+    "retiree_name", "retirement_announced_at",           // signal field names
+    "general manager", "chief operating officer",         // Title(s)
+    "Family-owned home services",                        // companies.icp
+    "residential home services", "Publicly traded",       // qualifies / disqualifies (Industry/Segment)
+  ];
+  for (const banned of FORBIDDEN) assert(!combined.includes(banned), `G: planner prompt never contains "${banned}"`);
+  assert(combined.includes(spec.companies.discovery!.objective), "G: planner prompt DOES contain the discovery objective (the one thing it's allowed to see)");
+  assert(combined.includes("downstream qualified so far: 12"), "G: planner may see the downstream qualified COUNT only, nothing else about qualification");
+}
+
+// ---------------------------------------------------------------------------------------------
+// H. research exhaustion is decided on PLANNER-WAVE totals, never individual search-job yields
+// ---------------------------------------------------------------------------------------------
+{
+  // Regression case: one planner wave whose 4 individual search jobs yield [5, 0, 0, 0] — a healthy
+  // wave (5 new companies) whose job-level array would have length >= 3 with a [0, 0] tail. The OLD
+  // (buggy) code fed job-level yields straight into researchExhausted and would have called this
+  // exhausted after a single wave. The fix: only the wave's ONE total (5) is ever passed in.
+  const jobYieldsWithinOneWave = [5, 0, 0, 0];
+  const waveTotal = jobYieldsWithinOneWave.reduce((a, b) => a + b, 0);
+  eq(waveTotal, 5, "H: one planner wave's total is the SUM of its jobs' yields");
+  eq(researchExhausted(jobYieldsWithinOneWave), true, "H: (documents the bug) feeding job-level yields directly would have wrongly called this exhausted");
+  eq(researchExhausted([waveTotal]), false, "H: feeding the correct wave-level total (just one completed wave) is NOT exhausted — only 1 of the required 3+ waves has run");
+
+  // "wave 1 jobs produce [20, 0, 0] => wave yield 20, NOT exhausted"
+  const wave1JobYields = [20, 0, 0];
+  const wave1Total = wave1JobYields.reduce((a, b) => a + b, 0);
+  eq(wave1Total, 20, "H: wave 1's total across its jobs is 20");
+  eq(researchExhausted([wave1Total]), false, "H: a single productive wave (20) is never exhausted regardless of its jobs' individual spread");
+
+  // "planner-wave yields [20, 0, 0] => exhausted only after those are 3 separate completed planner waves"
+  eq(researchExhausted([20, 0]), false, "H: two completed planner waves is not yet enough (needs 3+)");
+  eq(researchExhausted([20, 0, 0]), true, "H: three completed planner waves whose last two totaled ≤1 each IS exhausted");
+
+  // "yields [20, 0, 8] => not exhausted"
+  eq(researchExhausted([20, 0, 8]), false, "H: the last wave being productive (8) means NOT exhausted even after 3 waves");
+}
+
+// ---------------------------------------------------------------------------------------------
+// I. company_domain grounding is deterministic — never a model-invented domain, never an unrelated site
+// ---------------------------------------------------------------------------------------------
+{
+  // I.1 — LinkedIn post names Acme; extractor invents acme.com but the result never mentions it => rejected.
+  const linkedinResult: SearchResult = { url: "https://www.linkedin.com/in/someone", title: "Someone - Owner - Acme | LinkedIn", excerpts: ["Owner of Acme is retiring."] };
+  assert(!domainGroundedInResult("acme.com", linkedinResult), "I.1: domainGroundedInResult rejects a domain absent from the result's own url/title/excerpts");
+  const invented = parseExtractionResponse(JSON.stringify({ candidates: [
+    { source_url: linkedinResult.url, company_name: "Acme", company_domain: "acme.com", signal_person_name: "Someone", signal_person_title: "Owner", signal_evidence: "LinkedIn profile.", fields: {} },
+  ] }), [linkedinResult], spec);
+  eq(invented[0].company_domain, "", "I.1: an invented company_domain with no support in the cited result is rejected — company stays unresolved, never a guessed domain");
+
+  // Same case, but the excerpt DOES state the domain — now it's grounded and accepted.
+  const stated: SearchResult = { url: "https://www.linkedin.com/in/someone", title: "Someone - Owner - Acme | LinkedIn", excerpts: ["Owner of Acme (acme.com) is retiring."] };
+  const groundedCase = parseExtractionResponse(JSON.stringify({ candidates: [
+    { source_url: stated.url, company_name: "Acme", company_domain: "acme.com", signal_person_name: "Someone", signal_person_title: "Owner", signal_evidence: "LinkedIn profile states the company's site.", fields: {} },
+  ] }), [stated], spec);
+  eq(groundedCase[0].company_domain, "acme.com", "I.1b: a domain the source result itself states IS accepted");
+
+  // I.2 — focused search returns a news article (localnews.com) AND the true acme.com official page => choose acme.com.
+  const mixedResults: SearchResult[] = [
+    { url: "https://localnews.com/2026/09/acme-corp-to-close-plant", title: "Acme Corp to close local plant" },
+    { url: "https://acme.com/", title: "Acme Corp — Official Site" },
+  ];
+  eq(pickOfficialDomainFromResults("Acme Corp", mixedResults), "acme.com", "I.2: a topical news mention never outranks the company's own official site");
+
+  // I.3 — focused search returns only unrelated third-party pages => no domain, never a guess.
+  const unrelatedOnly: SearchResult[] = [
+    { url: "https://localnews.com/2026/09/small-business-roundup", title: "Small business roundup" },
+    { url: "https://randomblog.example.com/post", title: "My thoughts on retirement" },
+  ];
+  eq(pickOfficialDomainFromResults("Acme Corp", unrelatedOnly), "", "I.3: pages with no defensible name/identity support never resolve a domain");
+
+  // I.4 — similarly named companies cannot silently resolve to the wrong site.
+  const similarlyNamed: SearchResult[] = [
+    { url: "https://acmeplumbing.com/", title: "Acme Plumbing Co. — Official Site" },
+  ];
+  eq(pickOfficialDomainFromResults("Acme Hardware", similarlyNamed), "", "I.4: a different company that merely shares the word \"Acme\" does not silently resolve as the match");
+
+  // I.4b — the genuine match still resolves correctly when present alongside the similarly-named decoy.
+  const genuineAmongDecoys: SearchResult[] = [
+    { url: "https://acmeplumbing.com/", title: "Acme Plumbing Co. — Official Site" },
+    { url: "https://acmehardwareco.com/", title: "Acme Hardware Co. — Official Site" },
+  ];
+  eq(pickOfficialDomainFromResults("Acme Hardware", genuineAmongDecoys), "acmehardwareco.com", "I.4b: the genuine official site still wins even with a similarly-named decoy present");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

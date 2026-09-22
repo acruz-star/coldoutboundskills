@@ -9,24 +9,33 @@
  * (icp_evidence), exactly as before — that is qualification evidence, not a discovery filter.
  *
  * HOW IT WORKS (adaptive, no hard-coded source assumptions):
- *   PLAN     a lightweight OpenAI gpt-5-nano planner is shown the signal, every tactic already tried
- *            this campaign and its yield, and proposes 2-5 new search jobs (short keyword queries,
- *            optional include_domains for a source-focused pass, a rationale). It never repeats a
- *            tactic that already ran, and changes wording/source/person-vs-company framing when yield
- *            is weak. It is never told to prefer one source family — it learns that from yield.
- *   SEARCH   each job is POST /v1/search (mode "fast"; include_domains only when the job asks for a
- *            focused source pass — never a site: operator). This is the ONLY discovery network call in
- *            this file; the legacy FindAll batch-discovery endpoint is never referenced here.
+ *   PLAN     a lightweight OpenAI gpt-5-nano planner sees ONLY the Signal/s objective + match
+ *            conditions (never research_brief, signal field names, Title(s), rules, recipient logic,
+ *            or ICP/industry/segment language — see DiscoverySignal / plannerPrompt), plus every tactic
+ *            already tried this campaign and its yield, and the downstream qualified COUNT. It proposes
+ *            2-5 new search jobs (short keyword queries, optional include_domains for a source-focused
+ *            pass, a rationale) for one PLANNER WAVE. It never repeats a tactic that already ran, and
+ *            changes wording/source/person-vs-company framing when yield is weak. It is never told to
+ *            prefer one source family — it learns that from yield.
+ *   SEARCH   each job in the wave is POST /v1/search (mode "fast"; include_domains only when the job
+ *            asks for a focused source pass — never a site: operator). This is the ONLY discovery
+ *            network call in this file; the legacy FindAll batch-discovery endpoint is never referenced.
  *   EXTRACT  gpt-5-nano reads each NEW result (url/title/excerpts) and, strictly from what that result
  *            states, extracts a candidate company + any campaign signal/evidence fields the excerpt
- *            actually establishes. It never invents a company, domain or person — UNCLEAR/omitted stays
- *            that way. A candidate whose domain isn't evident is held as UNRESOLVED, never fed to Eric
- *            with a guessed domain.
- *   RESOLVE  for each unresolved company, ONE focused /v1/search for its official website. Still
- *            resolved → joins the feed; still not → stays in the audit file, never fabricated.
- *   REPEAT   the loop keeps planning/searching/extracting within this call until this round's target
- *            unique-company count is met, or the loop is genuinely exhausted (recent tactics are
- *            producing next to nothing new), or the spend cap stops it.
+ *            actually establishes (signalSchema — the ICP/field detail the planner never sees is fine
+ *            here; this step runs AFTER a company is already found by the signal-only planner). It
+ *            never invents a company or person; a company_domain is accepted only when
+ *            domainGroundedInResult confirms it is actually stated by that result — never a
+ *            plausible-looking domain gpt-5-nano merely generated. A candidate whose domain isn't
+ *            grounded is held as UNRESOLVED, never fed to Eric with a guessed domain.
+ *   RESOLVE  for each unresolved company, ONE focused /v1/search for its official website;
+ *            pickOfficialDomainFromResults only accepts a result whose domain/title defensibly names
+ *            THIS company (never a bare topical mention, never a similarly-named different company).
+ *            Resolved → joins the feed; still not → stays in the audit file, never fabricated.
+ *   REPEAT   the loop keeps running planner waves within this call until this round's target
+ *            unique-company count is met, or research is genuinely exhausted (the last 2 of at least 3
+ *            COMPLETE planner waves each produced ≤1 new unique company — a wave's own individual job
+ *            yields never trigger this on their own), or the spend cap stops it.
  *
  *     npx tsx parallel-search-discover.ts --spec=<campaign-spec.json> --run-dir=<dir> --total=<N>
  *       --total   cumulative unique companies this campaign run should have by the end of this call.
@@ -46,9 +55,11 @@
  *                                  established — audit only, never fed to Eric
  *   discovery-status.json          search_calls, search_jobs, queries_run, unique_urls_seen,
  *                                  unique_company_candidates, new_candidates_last_round,
- *                                  source_domain_counts, query_yield, research_exhausted, stop_reason
- *                                  (+ exhausted/matched/duplicates_removed kept for kept-run.ts's
- *                                  existing round-continuation and report logic)
+ *                                  source_domain_counts, query_yield (per search job),
+ *                                  planner_wave_yield (per planner wave — what exhaustion decides on),
+ *                                  research_exhausted, stop_reason (+ exhausted/matched/
+ *                                  duplicates_removed kept for kept-run.ts's existing
+ *                                  round-continuation and report logic)
  */
 import { existsSync, mkdirSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
@@ -196,8 +207,14 @@ export function parsePlannerResponse(raw: string, alreadyTried: Set<string>): { 
 }
 
 export type WaveHistoryItem = { queries: string[]; include_domains: string[]; rationale: string; new_candidates: number; source_hosts: string[] };
-export function plannerPrompt(spec: CampaignSpec, history: WaveHistoryItem[], ctx: { uniqueCount: number; qualifiedCount: number | null; target: number }): { system: string; user: string } {
-  const d = spec.companies.discovery!;
+/** The ONLY campaign information the search planner may see: the Signal/s objective + match
+ *  conditions. Deliberately NOT the full CampaignSpec — research_brief, signals.fields, titles,
+ *  rules, recipient logic and ICP/industry/segment language must be structurally unreachable here,
+ *  not just avoided by convention. Section G of the offline test suite asserts its keys are exactly
+ *  {objective, match_conditions} and that no other campaign field ever reaches the planner prompt. */
+export type DiscoverySignal = { objective: string; match_conditions: { name: string; description: string }[] };
+export function plannerPrompt(signal: DiscoverySignal, history: WaveHistoryItem[], ctx: { uniqueCount: number; qualifiedCount: number | null; target: number }): { system: string; user: string } {
+  const d = signal;
   const system = [
     "You are an adaptive web-research planner for B2B lead discovery. You choose SEARCH TACTICS ONLY — you never judge or filter which companies qualify; that happens later, by someone else, on separate evidence.",
     'Respond ONLY with strict JSON: {"jobs": [{"objective": string, "search_queries": [1-3 short KEYWORD queries, not full sentences], "include_domains": [optional bare domains, e.g. "linkedin.com"], "rationale": string}], "exhausted": boolean}.',
@@ -212,7 +229,6 @@ export function plannerPrompt(spec: CampaignSpec, history: WaveHistoryItem[], ct
     "CAMPAIGN SIGNAL TO RESEARCH — the ONLY thing discovery is allowed to search for. No industry, segment, title, angle, pain, or purchase-intent framing.",
     `objective: ${d.objective}`,
     `signal condition(s): ${d.match_conditions.map((c) => `${c.name} — ${c.description}`).join(" | ")}`,
-    spec.signals.research_brief ? `research brief: ${spec.signals.research_brief}` : "",
     "",
     "TACTICS ALREADY TRIED THIS CAMPAIGN (do not repeat any of these):",
     historyLines,
@@ -249,8 +265,23 @@ export function extractionPrompt(spec: CampaignSpec, job: SearchJob, results: Se
   return { system, user };
 }
 
+/** Is `domain` actually grounded in THIS result — never trust a model-generated domain on its say-so
+ *  alone. Grounded means either: the result's own url IS that domain (the result itself is the
+ *  company's site — the strongest possible grounding), or the exact domain string is present in the
+ *  result's own title/excerpt text (the source itself states it). Pure. */
+export function domainGroundedInResult(domain: string, result: SearchResult): boolean {
+  const d = normDomain(domain);
+  if (!d.includes(".")) return false;
+  if (officialCompanyDomain(result.url) === d) return true;
+  const text = `${result.title ?? ""} ${(result.excerpts ?? []).join(" ")}`.toLowerCase();
+  return text.includes(d);
+}
+
 /** Never invents a source: a candidate is kept only if its source_url is one of the results actually
- *  shown, and only if it names a company. `fields` is filtered to known campaign field names. Pure. */
+ *  shown, and only if it names a company. `fields` is filtered to known campaign field names.
+ *  A company_domain the model returns is accepted ONLY when domainGroundedInResult confirms it —
+ *  a plausible-looking domain the model invented, with no support in the cited result, is rejected
+ *  and the candidate is left unresolved (never guessed). Pure. */
 export function parseExtractionResponse(raw: string, results: SearchResult[], spec: CampaignSpec): ExtractedCandidate[] {
   let parsed: any;
   try { parsed = JSON.parse(raw); } catch { return []; }
@@ -265,7 +296,12 @@ export function parseExtractionResponse(raw: string, results: SearchResult[], sp
     const name = String(c?.company_name ?? "").trim();
     if (!name || isUnknown(name)) continue; // never invent a company
     const domainRaw = String(c?.company_domain ?? "");
-    const domain = isUnknown(domainRaw) ? "" : officialCompanyDomain(domainRaw) || officialCompanyDomain(url);
+    let domain = "";
+    if (!isUnknown(domainRaw)) {
+      const candidate = officialCompanyDomain(domainRaw);
+      if (candidate && domainGroundedInResult(candidate, res)) domain = candidate; // else: not grounded — rejected, stays unresolved
+    }
+    if (!domain) domain = officialCompanyDomain(url); // the result IS the company's own site — trivially grounded
     const fields: Record<string, string> = {};
     if (c?.fields && typeof c.fields === "object") for (const [k, v] of Object.entries(c.fields)) if (validFields.has(k) && !isUnknown(v)) fields[k] = String(v).slice(0, 2000);
     out.push({
@@ -283,24 +319,52 @@ export function parseExtractionResponse(raw: string, results: SearchResult[], sp
 }
 
 // ---------- domain resolution (B: a social/news result names a company but not its domain) ----------
-/** Picks the most plausible official domain from a focused "<company> official website" search's
- *  results: non-company hosts (social/news/wires/listings) are filtered out by officialCompanyDomain,
- *  then the remaining candidates are ranked by how much the company name overlaps the domain/title. Pure. */
-export function pickOfficialDomainFromResults(companyName: string, results: SearchResult[]): string {
+/** How defensibly a domain identifies THIS company by name — 0 means "not defensible", and such a
+ *  domain is never returned, never guessed at. Requires either the domain's own name slug to
+ *  substantially match the company's full name (a genuine "official site" pattern — e.g.
+ *  riversidehardwareco.com for "Riverside Hardware"), or every significant word of the company name
+ *  to appear in the result's title AND the domain to share at least one of those words too. A bare
+ *  topical mention (a news article whose domain has nothing to do with the company's own name) scores
+ *  0 and is excluded, even if the title happens to name the company. Pure. */
+function domainMatchScore(companyName: string, domain: string, title: string): 0 | 1 | 2 {
   const nameWords = normName(companyName).split(" ").filter((w) => w.length > 2);
-  const candidates = results.map((r) => ({ r, domain: officialCompanyDomain(r.url) })).filter((x) => x.domain);
-  if (!candidates.length) return "";
-  const scored = candidates.map((c) => ({ ...c, score: nameWords.filter((w) => c.domain.includes(w) || (c.r.title ?? "").toLowerCase().includes(w)).length }));
+  if (!nameWords.length) return 0;
+  const nameJoined = nameWords.join("");
+  const domainSlug = domain.split(".")[0].replace(/[^a-z0-9]/g, "");
+  if (domainSlug.length > 2 && (domainSlug.includes(nameJoined) || nameJoined.includes(domainSlug))) return 2;
+  const titleNorm = normName(title);
+  const allWordsInTitle = nameWords.every((w) => titleNorm.includes(w));
+  const domainSharesAWord = nameWords.some((w) => domainSlug.includes(w));
+  return allWordsInTitle && domainSharesAWord ? 1 : 0;
+}
+
+/** Picks the official domain from a focused "<company> official website" search's results —
+ *  deterministically, never a guess. Non-company hosts (social/news/wires/listings/filings/
+ *  aggregators) are excluded by officialCompanyDomain first; of what remains, only domains that pass
+ *  domainMatchScore (real name/identity support, not bare topical overlap) are even eligible; the
+ *  best-scoring one wins. If nothing passes, returns "" — the company stays unresolved rather than
+ *  attaching an unrelated or similarly-named company's site. Pure. */
+export function pickOfficialDomainFromResults(companyName: string, results: SearchResult[]): string {
+  const scored = results
+    .map((r) => ({ r, domain: officialCompanyDomain(r.url) }))
+    .filter((x) => x.domain)
+    .map((x) => ({ ...x, score: domainMatchScore(companyName, x.domain, x.r.title ?? "") }))
+    .filter((x) => x.score > 0);
+  if (!scored.length) return "";
   scored.sort((a, b) => b.score - a.score);
   return scored[0].domain;
 }
 
-// ---------- research exhaustion (auditable, code-decided from observed yield) ----------
-/** Exhausted when at least 3 waves ran and the last 2 consecutive waves each produced ≤1 new unique
- *  candidate — i.e., recent tactics are no longer materially productive. Pure, no network. */
-export function researchExhausted(waveNewCandidates: number[]): boolean {
-  if (waveNewCandidates.length < 3) return false;
-  return waveNewCandidates.slice(-2).every((n) => n <= 1);
+// ---------- research exhaustion (auditable, code-decided from observed PLANNER-WAVE yield) ----------
+/** A planner wave = one planner call's entire group of search jobs, run to completion, plus the
+ *  domain resolutions those jobs' results generated — one number: the TOTAL new unique companies
+ *  that whole wave produced. Exhausted when at least 3 COMPLETE planner waves have run and the last
+ *  2 consecutive waves each produced ≤1 new unique company. An individual low-yield job inside an
+ *  otherwise-productive wave (e.g. job yields [20, 0, 0] within one wave) must never trigger this —
+ *  callers pass PLANNER-WAVE totals here, never per-job yields. Pure, no network. */
+export function researchExhausted(plannerWaveNewCandidates: number[]): boolean {
+  if (plannerWaveNewCandidates.length < 3) return false;
+  return plannerWaveNewCandidates.slice(-2).every((n) => n <= 1);
 }
 
 // ---------- OpenAI (gpt-5-nano; same key/model pattern as the rest of this skill) ----------
@@ -376,19 +440,26 @@ async function main() {
     const wr = jobEvents().find((w: any) => w.event === "wave_extracted" && w.job_hash === s.job_hash);
     return { queries: s.search_queries, include_domains: s.include_domains ?? [], rationale: s.rationale, new_candidates: wr?.new_candidates ?? 0, source_hosts: wr?.source_hosts ?? [] };
   });
+  // PLANNER-WAVE history (distinct from the per-job waveHistory above, which is planner *context* only).
+  // Exhaustion is decided on this: one number per completed planner wave = every new unique company that
+  // wave's whole job group + the domain resolutions it generated produced. Reconstructed for resume.
+  const plannerWaveHistory: number[] = jobEvents().filter((e: any) => e.event === "planner_wave_completed").map((e: any) => Number(e.new_candidates ?? 0));
 
   while (state.companies.size < total && waves < MAX_WAVES) {
     const qualifiedPath = join(runDir, "output", "qualified.csv");
     const qualifiedCount = existsSync(qualifiedPath) ? readCsv(qualifiedPath).length : null;
-    const { system, user } = plannerPrompt(spec, waveHistory, { uniqueCount: state.companies.size, qualifiedCount, target: total });
+    const { system, user } = plannerPrompt({ objective: d.objective, match_conditions: d.match_conditions }, waveHistory, { uniqueCount: state.companies.size, qualifiedCount, target: total });
     const plannerRaw = await askNano(system, user, apiKey, model);
     const { jobs, plannerExhausted, note } = parsePlannerResponse(plannerRaw, submittedHashes());
     if (note) say(`  ${note}`);
     if (!jobs.length) { stopReason = plannerExhausted ? "planner reports no further productive search tactics" : "planner produced no new (non-repeating) tactic this wave"; break; }
 
+    let waveNewCandidates = 0;
+    const waveJobHashes: string[] = [];
     for (const job of jobs) {
       if (state.companies.size >= total) break;
       const hash = searchJobHash(job);
+      waveJobHashes.push(hash);
       capCheck(SEARCH_EST.fast, `search job [${job.search_queries.join(", ")}]`);
       appendJsonl(jobsLogPath, { event: "search_submitting", kind: "discover", job_hash: hash, objective: job.objective, search_queries: job.search_queries, include_domains: job.include_domains ?? [], rationale: job.rationale, at: new Date().toISOString() });
       const body: any = { objective: job.objective, search_queries: job.search_queries, mode: "fast" };
@@ -422,6 +493,7 @@ async function main() {
       appendJsonl(jobsLogPath, { event: "wave_extracted", job_hash: hash, new_candidates: added.length, duplicate_candidates: dup, source_hosts: hosts, processed_urls: newResults.map((r) => r.url), at: new Date().toISOString() });
       say(`    ${added.length} new unique candidate(s), ${dup} duplicate(s) of an already-known company`);
       waveHistory.push({ queries: job.search_queries, include_domains: job.include_domains ?? [], rationale: job.rationale, new_candidates: added.length, source_hosts: hosts });
+      waveNewCandidates += added.length;
     }
 
     // ---- domain resolution: companies a signal named but whose domain isn't evident yet ----
@@ -442,13 +514,18 @@ async function main() {
         const isNew = applyDomainResolution(state, u.name, domain, exclude);
         appendJsonl(join(runDir, "signals.jsonl"), { domain, name: u.name, source: "search", parallel_id: hash, run_id: `domain-resolve:${key}`, status: "RESEARCH_COMPLETE", content: state.companies.get(domain)?.content ?? { company_domain: domain }, researched_at: new Date().toISOString() });
         say(`  domain resolved: "${u.name}" → ${domain}`);
-        if (isNew) waveHistory[waveHistory.length - 1] && (waveHistory[waveHistory.length - 1].new_candidates += 1);
+        if (isNew) waveNewCandidates += 1;
       } else say(`  domain NOT resolved: "${u.name}" — kept in ${unresolvedPath} for review, not fed to Eric`);
     }
 
+    // ---- close out this PLANNER WAVE: one total for exhaustion, regardless of how its individual
+    // jobs performed (a wave that yields [20, 0, 0] across its jobs is a productive wave of 20). ----
     waves++;
+    plannerWaveHistory.push(waveNewCandidates);
+    appendJsonl(jobsLogPath, { event: "planner_wave_completed", wave: waves, job_hashes: waveJobHashes, new_candidates: waveNewCandidates, at: new Date().toISOString() });
+    say(`  planner wave ${waves} complete: ${waveNewCandidates} new unique candidate(s) across ${waveJobHashes.length} search job(s)`);
     if (state.companies.size >= total) { stopReason = "reached this round's target unique-company count"; break; }
-    if (researchExhausted(waveHistory.map((w) => w.new_candidates))) { stopReason = "adaptive search exhausted: recent tactics produced next to no new unique candidates"; break; }
+    if (researchExhausted(plannerWaveHistory)) { stopReason = "adaptive search exhausted: the last 2 of 3+ complete planner waves each produced ≤1 new unique company"; break; }
   }
   if (!stopReason) stopReason = waves >= MAX_WAVES ? "wave safety ceiling reached this call (resume to continue)" : "reached this round's target unique-company count";
 
@@ -465,7 +542,9 @@ async function main() {
   const urlSet = new Set<string>(); const sourceDomainCounts: Record<string, number> = {};
   for (const c of completes) for (const u of (c.urls ?? [])) { urlSet.add(u); const h = normDomain(u); sourceDomainCounts[h] = (sourceDomainCounts[h] ?? 0) + 1; }
   const query_yield = discoverSubmits.map((s: any) => { const wr = evs.find((w: any) => w.event === "wave_extracted" && w.job_hash === s.job_hash); return { queries: s.search_queries, include_domains: s.include_domains ?? [], rationale: s.rationale, new_candidates: wr?.new_candidates ?? 0 }; });
-  const research_exhausted = researchExhausted(waveHistory.map((w) => w.new_candidates)) || stopReason.startsWith("adaptive search exhausted");
+  // Wave-level yield (what exhaustion actually decides on) — auditable independently of per-job query_yield.
+  const planner_wave_yield = evs.filter((e: any) => e.event === "planner_wave_completed").map((e: any) => ({ wave: e.wave, job_count: (e.job_hashes ?? []).length, new_candidates: e.new_candidates }));
+  const research_exhausted = researchExhausted(plannerWaveHistory) || stopReason.startsWith("adaptive search exhausted");
 
   const status = {
     search_calls: completes.length,
@@ -477,6 +556,7 @@ async function main() {
     unresolved_companies: state.unresolved.size,
     source_domain_counts: sourceDomainCounts,
     query_yield,
+    planner_wave_yield,
     research_exhausted,
     stop_reason: stopReason,
     // kept for kept-run.ts's existing round-continuation (planNextRound) and report logic:
