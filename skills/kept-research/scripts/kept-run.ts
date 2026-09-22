@@ -20,16 +20,16 @@
  *
  * Fixed sequence — the spec (from the Google Doc tab) only changes WHAT is looked for:
  *
- *   COMPILE    spec → judge-spec.json → Eric's make-judge.ts → prompt.txt; lane.json (supplied lists only)
- *   DISCOVER   ONE Parallel FindAll run returns the companies AND their evidence: the tab's discovery
- *   +EVIDENCE  conditions + its ICP as match conditions (cited), and the campaign's fact fields, canonical
- *              company domain and company context as an enrichment on the same run.
- *   COMPANIES  Eric's run-lane.ts (UNMODIFIED) + verify-fallback — ONLY for a supplied company list / seeds,
- *              which arrive with no Parallel evidence. Parallel-discovered companies bypass it.
- *   GAPS       Parallel Task research ONLY for required facts still missing / contradictory (often zero)
- *   PEOPLE     Quick Enrich, ONLY for companies that passed the research rules: Employee Search directly when
- *              the recipient is named; Contact Finder first only when just a title is known
- *   QUALIFY    deterministic QUALIFIED / REVIEW / REJECT gate (+ dedupe) → output/*.csv, evidence, summary, scorecard
+ *   COMPILE    spec → judge-spec.json → Eric's make-judge.ts → prompt.txt; lane.json (native fields only)
+ *   DISCOVER   ONE Parallel FindAll run on the campaign SIGNAL only (broad: no ICP / geography / size filter).
+ *   +EVIDENCE  The same run returns the campaign's supporting facts, the canonical company domain, company
+ *              identity and — only when the campaign states an ICP — the cited facts that bear on it.
+ *   ERIC LANE  EVERY company, however discovered: his MERGE → SCORE (judge reads Parallel's cited evidence as the
+ *              description) → REJECT_AUDIT, then VERIFY (passes on sufficient cited evidence; otherwise his live
+ *              website check) → FINALIZE → PUSH → REPORT. Nothing is bypassed.
+ *   GAPS       targeted Parallel research only for supporting facts still missing / contradictory
+ *   RECIPIENT  the campaign's recipient logic (Title(s) / named person) → Quick Enrich → Eric's contacts-merge + contacts.ts
+ *   GATE       deterministic QUALIFIED / REVIEW / REJECT (+ dedupe) → output/*.csv, evidence, summary, scorecard
  *   (then, by the skill procedure: evidence read → instantly-upload.ts → Instantly LEAD LIST; never a campaign)
  *
  * How Eric's orchestrator runs without Prospeo and without being edited: his stages are
@@ -46,7 +46,7 @@ import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { loadEnv, parseArgs, readCsv } from "../../list-expander/scripts/lib";
-import { loadSpec, buildResearchSet, spentSoFar, readJsonl, FINDALL_EST, TASK_EST_PER_RUN, FIRST_BATCH_COMPANIES, planNextRound } from "./kept-lib";
+import { loadSpec, buildResearchSet, icpIsNeutral, spentSoFar, readJsonl, FINDALL_EST, TASK_EST_PER_RUN, FIRST_BATCH_COMPANIES, planNextRound } from "./kept-lib";
 import { compile } from "./compile-spec";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
@@ -87,7 +87,7 @@ function discoveryTotal(runDir: string): number {
 }
 
 /** EVIDENCE-AWARE VALIDATION. For companies HIS judge qualified whose Parallel evidence meets the evidence
- *  standard (canonical domain stated + ICP matched with citations + cited context), record the validation in
+ *  standard (canonical domain stated + cited identity + cited ICP facts when the campaign states an ICP), record the validation in
  *  his verified stream — the file his VERIFY stage resumes from — so that stage passes on evidence instead of
  *  re-fetching. Every other qualified company is left for his live website check. Rows carry
  *  website_status="parallel_evidence" so the basis of each pass is auditable. */
@@ -234,7 +234,7 @@ function main() {
     `source      : "${spec.source.doc_title}" → tab "${spec.source.tab}" (sha ${spec.source.tab_sha256.slice(0, 12)})`,
     `run dir     : ${runDir}`,
     `volume      : inspect up to ${T.max_companies} unique companies and KEEP EVERY lead that qualifies. ${T.qualified_leads} qualified = minimum success threshold, NOT a stop (${T.source})`,
-    `parallel    : ${d ? `ONE FindAll run (${gen}), SIGNAL-ONLY and broad: ${d.match_conditions.map((c) => c.name).join(", ")}; no ICP/geo/size filter at discovery. Returns ${spec.signals.fields.length} campaign facts + icp_evidence + company_domain + company_context as evidence (${proc}), in rounds — ${bought ? `${bought} already bought, resuming` : `first round ${firstRound}`}; later rounds extend the same run` : "none (company list / seeds only — single pass)"}${listN ? ` + ${listN} listed/seed companies` : ""}`,
+    `parallel    : ${d ? `ONE FindAll run (${gen}), SIGNAL-ONLY and broad: ${d.match_conditions.map((c) => c.name).join(", ")}; no ICP/geo/size filter at discovery. Returns ${spec.signals.fields.length} supporting facts + company identity + canonical domain${icpIsNeutral(spec) ? " (no ICP facts: the campaign sets no company restriction)" : " + icp_evidence"} (${proc}), in rounds — ${bought ? `${bought} already bought, resuming` : `first round ${firstRound}`}; later rounds extend the same run` : "none (company list / seeds only — single pass)"}${listN ? ` + ${listN} listed/seed companies` : ""}`,
     `eric's lane : EVERY company runs his MERGE → SCORE (ICP judge, ${judge || "NOT CONFIGURED"}) → REJECT_AUDIT → VERIFY → FINALIZE → REPORT. VERIFY is evidence-aware: passes on sufficient cited Parallel evidence, else his live website check`,
     `gaps        : extra Parallel research ONLY for required facts still missing / contradictory (asked once, missing fields only)`,
     `people      : Quick Enrich — ${spec.people.recipient.from_field ? `person named in signals.${spec.people.recipient.from_field}` : `titles [${spec.people.recipient.titles.join(", ")}]`}; only after the research rules pass; Employee Search directly when the person is named (1 credit), Contact Finder first only for title-only`,
@@ -255,7 +255,7 @@ function main() {
   // ---- execute in ROUNDS until the target is met. Same fixed order every round; every step resumable. ----
   let total = firstRound, stopReason = "";
   for (let round = 1; ; round++) {
-    console.log(`\n══ ROUND ${round} — discovery total ${d ? total : 0} ══\n▶ DISCOVER + EVIDENCE (Parallel: companies, ICP + conditions, campaign facts, canonical domain — one run)`);
+    console.log(`\n══ ROUND ${round} — discovery total ${d ? total : 0} ══\n▶ DISCOVER + EVIDENCE (Parallel: companies matching the SIGNAL, with supporting facts, identity and canonical domain — one run)`);
     const disc = tsx(join(HERE, "parallel-discover.ts"), [`--spec=${specCopy}`, `--run-dir=${runDir}`, `--total=${total}`, ...(args.adopt ? [`--adopt=${args.adopt}`] : []), ...(args["confirm-not-submitted"] ? ["--confirm-not-submitted"] : [])]);
     if (disc === 5 && round > 1) { stopReason = "spend cap: the next discovery round would exceed it"; break; }
     if (disc !== 0) { console.error(`\nDISCOVER stopped (exit ${disc}). Read the message above; re-running the same command resumes without paying twice.`); process.exit(disc); }

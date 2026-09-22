@@ -32,7 +32,7 @@ import { writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { join } from "path";
 import { createHash } from "crypto";
 import { loadEnv, parseArgs, writeCsv, normDomain, sleep } from "../../list-expander/scripts/lib";
-import { loadSpec, CampaignSpec, FIRST_BATCH_COMPANIES, rootDomain, evidenceSufficient, parallel, readJsonl, appendJsonl, logSpend, spentSoFar, requireSpendApproval, FINDALL_EST, TASK_EST_PER_RUN, signalSchema, isUnknown } from "./kept-lib";
+import { loadSpec, CampaignSpec, FIRST_BATCH_COMPANIES, rootDomain, evidenceSufficient, icpIsNeutral, parallel, readJsonl, appendJsonl, logSpend, spentSoFar, requireSpendApproval, FINDALL_EST, TASK_EST_PER_RUN, signalSchema, isUnknown } from "./kept-lib";
 
 // FindAll's candidate url is sometimes the SOURCE of the news or an investor/about microsite. Parallel
 // is asked for the canonical domain (company_domain); this is only the fallback when it says UNCLEAR.
@@ -71,9 +71,9 @@ export function candidatesToResearch(spec: CampaignSpec, res: any, exclude: Set<
     const conds = Object.entries(out).filter(([, v]: any) => v?.type === "match_condition") as [string, any][];
     const icpCites = new Set(cites("icp_evidence")).size;
     const ctxCited = !isUnknown(content.company_context) && cites("company_context").length > 0;
-    const suff = evidenceSufficient({ canonical_domain_stated: !!stated, icp_evidence_citations: icpCites, context_cited: ctxCited });
+    const suff = evidenceSufficient({ canonical_domain_stated: !!stated, icp_evidence_citations: icpCites, context_cited: ctxCited, icp_required: !icpIsNeutral(spec) });
     sufficiency.push({ domain, name: c.name ?? domain, canonical_domain_stated: String(!!stated), icp_evidence_citations: String(icpCites), context_cited: String(ctxCited), sufficient: String(suff.ok), why: suff.why });
-    // evidence text for Eric's ICP judge: what the company is + the cited ICP facts (he decides fit; discovery did not)
+    // evidence text for Eric's judge: the company's identity, plus cited ICP facts only when the campaign states an ICP
     const icpFacts = isUnknown(content.icp_evidence) ? "" : String(content.icp_evidence);
     const description = [isUnknown(content.company_context) ? c.description ?? "" : String(content.company_context), icpFacts && `ICP evidence: ${icpFacts}`, conds.length && `Signal: ${conds.map(([k, v]) => `${k}=${String(v.value).slice(0, 80)}`).join(" | ")}`, icpCites && `Sources: ${[...new Set(cites("icp_evidence"))].slice(0, 4).join(" ; ")}`].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 3000);
     feed.push({ domain, name: c.name ?? domain, description, source: "parallel-findall", findall_candidate_id: c.candidate_id ?? "" });
@@ -150,7 +150,7 @@ async function main() {
     if (r?._network_error || r?._http_status || r?.error) { console.error(`FindAll enrich did not confirm: ${JSON.stringify(r).slice(0, 300)}`); process.exit(4); }
     log("findall_enriched", { ref, processor, fields: spec.signals.fields.length });
     logSpend(runDir, { provider: "parallel", kind: `findall-enrich:${processor}`, id: findallId, est_usd: taskEst * covers, note: `evidence fields on up to ${covers} matches (estimate at ceiling)` });
-    say(`evidence enrichment attached to ${findallId} (${processor}, ${spec.signals.fields.length} campaign fields + icp_evidence + company_domain + company_context)`);
+    say(`evidence enrichment attached to ${findallId} (${processor}, ${spec.signals.fields.length} campaign fields + company_domain + company identity${icpIsNeutral(spec) ? "; no ICP facts — the campaign sets no company restriction" : " + icp_evidence"})`);
     await sleep(5000);
   }
 

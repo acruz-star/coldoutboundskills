@@ -9,9 +9,10 @@
  * website verify. This gate applies the campaign's RULES (from the Google Doc
  * tab, compiled into the spec) to the researched facts:
  *
- *   REJECT     a rule is demonstrably false (on_fail=REJECT), or on_unknown=REJECT fired,
- *              or more unresolved facts remain than review_policy.max_unresolved (default 1)
- *   REVIEW     otherwise able to qualify, with 1..max_unresolved facts genuinely unresolved
+ *   REJECT     only when something is demonstrably false (a rule with on_fail=REJECT failed, or a rule the
+ *              campaign marked on_unknown=REJECT could not be established)
+ *   REVIEW     the signal is not demonstrably false but important evidence is still missing or unresolved —
+ *              however many facts that is. Missing evidence never becomes a rejection.
  *   QUALIFIED  every rule passes, recipient (+ email when required) found, required variables filled
  *
  * Missing evidence is never read as positive evidence, and a technical research
@@ -124,9 +125,9 @@ export function evaluate(spec: CampaignSpec, company: Record<string, string>, si
     const last = recipient?.last_name?.toLowerCase();
     if (last && last.length > 2 && new RegExp(`\\b${last.replace(/[^a-z]/g, "")}\\b`, "i").test(contra)) out.unresolved.push("contradiction names the recipient — read the evidence");
   }
-  const max = spec.review_policy?.max_unresolved ?? 1;
   if (rejects.length) return { ...out, verdict: "REJECT", reason: rejects[0] };
-  if (out.unresolved.length > max) return { ...out, verdict: "REJECT", reason: `${out.unresolved.length} unresolved facts (REVIEW allows ${max}): ${out.unresolved.join("; ")}` };
+  // Unresolved facts, however many, mean REVIEW: nothing here is demonstrably false. (review_policy.max_unresolved
+  // is still accepted in a spec for compatibility but no longer converts unresolved facts into a rejection.)
   if (out.unresolved.length) return { ...out, verdict: "REVIEW", reason: out.unresolved.join("; ") };
   return { ...out, reason: "all rules pass; recipient and required variables established" };
 }
@@ -224,7 +225,7 @@ function main() {
     `- Supplied-list companies judged by Eric's ICP judge: ${existsSync(scored) ? readCsv(scored).length : 0}`,
     `- Researched: ${companies.length} (Parallel evidence ${companies.filter((c) => c.verify_path === "parallel_evidence").length}, live website verify ${companies.filter((c) => (c.verify_path || "primary") === "primary").length}, secondary verification ${companies.filter((c) => String(c.verify_path).startsWith("secondary")).length}, unverifiable → REVIEW ${companies.filter((c) => c.verify_path === "unverified_review").length})`,
     `- **QUALIFIED: ${buckets.QUALIFIED.length}**`,
-    `- **REVIEW: ${buckets.REVIEW.length}**${failed ? ` (${failed} are RESEARCH_FAILED — technical, re-run to retry)` : ""}`,
+    `- **REVIEW: ${buckets.REVIEW.length}** (signal not demonstrably false; evidence still missing)${failed ? ` (${failed} are RESEARCH_FAILED — technical, re-run to retry)` : ""}`,
     `- **REJECTED: ${buckets.REJECT.length}** (icp judge ${byStage("icp_judge")}, website verify ${byStage("website_verify")}, campaign rules ${byStage("rules")})`, "",
     "## Rule rejections by decisive rule", ...([...reasons.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `- ${k}: ${n}`)), reasons.size ? "" : "- none\n",
     "## Spend (estimates from the ledger, not invoices)", `- Parallel: ~$${spend.usd.toFixed(2)} of $${spec.budget.max_usd} budget`, `- Quick Enrich: ${spend.credits} credits used (no cap — treated as unlimited)`, "",

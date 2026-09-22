@@ -52,8 +52,8 @@ signals.research_brief          what to establish about each company
 signals.fields[]                { name (snake_case), type: string|number|boolean|date|enum, enum?[], description }
                                 description = the literal research question. Every field comes back as
                                 a string; "UNCLEAR" means not established. `company_domain`, `company_context`,
-                                `icp_evidence` (cited ICP facts for Eric's judge) and `contradictions` are always added
-                                automatically and may be used in rules.
+                                `contradictions` are always added automatically; `icp_evidence` is added only when the campaign
+                                states an ICP (neutral "Any company" ICP → no company-profile facts are researched).
                                 These fields are returned BY the FindAll run (enrichment); write each one once —
                                 do not add a field that merely restates a match condition.
 
@@ -73,7 +73,7 @@ people.on_no_email              REVIEW (default) | REJECT
 rules[]             { id, description, field, op, value?, on_fail: REJECT|REVIEW, on_unknown: REVIEW|REJECT|PASS }
     field           signals.<field> | company.<lane-final column> | recipient.<first_name|last_name|title|email|...>
     op              eq ne in not_in gte lte gt lt is_true is_false exists contains not_contains date_gte date_lte
-review_policy.max_unresolved    default 1
+review_policy.max_unresolved    accepted for compatibility; unresolved facts always mean REVIEW, never REJECT
 variables[]         { name, from: signals.<f>|company.<c>|recipient.<c>, required? } → var_<name> columns
 targets             OPTIONAL { qualified_leads, max_companies (5-1000) }. Omit it and the GLOBAL rule applies:
                     inspect up to 1,000 unique companies and keep EVERY lead that qualifies; qualified_leads (50)

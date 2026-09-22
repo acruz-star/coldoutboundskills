@@ -323,16 +323,27 @@ export function signalSchema(spec: CampaignSpec, only?: Set<string>): Record<str
     else props[f.name] = { type: "string", description: base };
   }
   if (!only || only.has("company_domain")) props.company_domain = { type: "string", description: `The company's OWN primary website domain, e.g. acme.com — not a news site, press-release wire, investor-relations microsite, social profile or parent-company site. "${UNCLEAR}" if it cannot be established.` };
-  if (!only || only.has("icp_evidence")) props.icp_evidence = { type: "string", description: icpEvidenceField(spec).description };
-  if (!only || only.has("company_context")) props.company_context = { type: "string", description: "Two factual sentences on what this company does, where it is headquartered and roughly how large it is, from sources you can cite." };
+  const icpField = icpEvidenceField(spec);
+  if (icpField && (!only || only.has("icp_evidence"))) props.icp_evidence = { type: "string", description: icpField.description };
+  if (!only || only.has("company_context")) props.company_context = { type: "string", description: "One or two cited sentences that establish this company's IDENTITY: its name as it presents itself and what it does, enough to confirm the signal is about this company and not a similarly named one. Do not research headquarters, size, ownership or other profile facts unless a campaign field asks for them." };
   props.contradictions = { type: "string", description: "Material contradictions between credible sources about any field above, stated literally with both versions. Empty string if none. Do not silently pick the convenient version." };
   return { type: "json", json_schema: { type: "object", properties: props, required: Object.keys(props), additionalProperties: false } };
 }
 
-/** The tab's ICP is NOT a discovery filter. Discovery is signal-only (broad); the ICP comes back as cited
- *  EVIDENCE on every discovered company, and Eric's judge decides fit from it. */
-export function icpEvidenceField(spec: CampaignSpec): { name: string; description: string } {
-  return { name: "icp_evidence", description: `Facts relevant to whether this company fits this profile, with sources: "${spec.companies.icp}". Qualifies when: ${spec.companies.qualifies.join("; ")}. Does not qualify when: ${spec.companies.disqualifies.join("; ")}. State what the company does, where it is headquartered, its approximate size and its ownership, citing sources. Report the facts; do not decide whether it qualifies.` };
+/** Does the campaign actually restrict who the companies are? A neutral ICP (Industry / Segment = Any, written
+ *  as "Any company …" with no stated disqualifier) means NO company-type facts are researched or judged. */
+export function icpIsNeutral(spec: CampaignSpec): boolean {
+  const c = spec.companies;
+  const noDisq = !c.disqualifies?.length || c.disqualifies.every((d) => /^(none|no restriction|n\/a|any)/i.test(d.trim()));
+  return /^any (company|companies|business|businesses|industry|organization)\b/i.test((c.icp ?? "").trim()) && noDisq;
+}
+
+/** The tab's ICP is NOT a discovery filter. Discovery is signal-only (broad). When the campaign states an ICP,
+ *  the facts that bear on it come back as cited EVIDENCE and Eric's judge decides fit. When the ICP is neutral
+ *  there is nothing to judge, so nothing is asked. */
+export function icpEvidenceField(spec: CampaignSpec): { name: string; description: string } | null {
+  if (icpIsNeutral(spec)) return null;
+  return { name: "icp_evidence", description: `The campaign restricts which companies it is for: "${spec.companies.icp}". Qualifies when: ${spec.companies.qualifies.join("; ")}. Does not qualify when: ${spec.companies.disqualifies.join("; ")}. Report, with sources, only the facts about this company that bear on that restriction. Do not decide whether it qualifies, and do not research facts the restriction does not mention.` };
 }
 
 /** Later evidence overlays earlier evidence, but an UNCLEAR answer never erases an established fact. */
@@ -379,10 +390,10 @@ export function qeCacheLoad(): Map<string, any> { const m = new Map<string, any>
 
 // ---------- evidence standard for the company/website validation stage ----------
 /** Is Parallel's cited evidence enough for Eric's validation stage to pass WITHOUT a live website fetch?
- *  Needs all three: a canonical company domain Parallel itself stated, cited ICP evidence (the facts his judge
- *  ruled on), and cited company context. Anything less → his live website check runs. */
-export function evidenceSufficient(e: { canonical_domain_stated: boolean; icp_evidence_citations: number; context_cited: boolean }): { ok: boolean; why: string } {
-  const miss = [!e.canonical_domain_stated && "no canonical company domain from Parallel", e.icp_evidence_citations < 1 && "ICP evidence has no citation", !e.context_cited && "no cited company context"].filter(Boolean);
-  return miss.length ? { ok: false, why: miss.join("; ") } : { ok: true, why: `canonical domain stated by Parallel; ICP evidence on ${e.icp_evidence_citations} cited source(s); company context cited` };
+ *  Needs: a canonical company domain Parallel itself stated, cited company identity, and — only when the campaign
+ *  states an ICP — cited ICP evidence (the facts his judge ruled on). Anything less → his live website check runs. */
+export function evidenceSufficient(e: { canonical_domain_stated: boolean; icp_evidence_citations: number; context_cited: boolean; icp_required?: boolean }): { ok: boolean; why: string } {
+  const miss = [!e.canonical_domain_stated && "no canonical company domain from Parallel", e.icp_required !== false && e.icp_evidence_citations < 1 && "ICP evidence has no citation", !e.context_cited && "no cited company identity"].filter(Boolean);
+  return miss.length ? { ok: false, why: miss.join("; ") } : { ok: true, why: `canonical domain stated by Parallel; ${e.icp_required !== false ? `ICP evidence on ${e.icp_evidence_citations} cited source(s); ` : "no ICP restriction in this campaign; "}company identity cited` };
 }
 

@@ -5,10 +5,13 @@ description: Run campaign research and lead qualification from a Google Doc camp
 
 # kept-research — campaign research on Eric's list-builder, with Parallel + Quick Enrich
 
-**What qualification IS (every campaign, however it is written):**
-1. Is the signal real? 2. Is it tied to the right company / person? 3. Who should we send to (the tab's Title(s))?
-4. Can Quick Enrich verify that person's contact info? — That is the whole standard. The **Angle** is for the
-copy and is never used to decide whether a lead is valid. We do not prove the pain: the email may make a
+**The reasoning goal (every campaign):** work out, from the campaign tab, what has to be true for the
+email to be honest, then use Eric's workflow, Parallel's cited evidence and Quick Enrich to establish it. In
+practice that comes down to: is the signal real? is it tied to the right company / person? who should we
+send to? can we verify their contact information? These are the questions to answer, NOT four fixed fields,
+four gates or one checklist: different signals need different supporting facts (a retirement needs a name, a
+date and a tenure; a funding round needs an amount and a date; a new hire needs a role and a start). The
+**Angle** is copy context and never a reason to reject. We do not prove the pain: the email may make a
 reasonable assumption from a real signal and ask. Do not add conditions the tab does not state.
 
 **The Google Doc tab says WHAT to look for. This skill's fixed pipeline decides HOW.**
@@ -61,7 +64,7 @@ the same order:
 |---|---|---|---|
 | 1 | Campaign spec, rules, judge prompt | `compile-spec.ts` → Eric's `make-judge.ts` + `_TEMPLATE.md` (4 mandatory blocks) | the Google Doc tab |
 | 2 | Discovery (his PULL / `extra_candidates` door) | Eric's `run-lane.ts` PULL+MERGE; feed written by `parallel-discover.ts` | **Parallel** FindAll, **signal-only and broad**: the tab's signal is the only match condition — no ICP, geography, size or exclusion at discovery. The campaign's facts + cited `icp_evidence` + canonical `company_domain` + `company_context` come back in the same run |
-| 3 | ICP qualification | Eric's SCORE (`score-batch.ts`, gpt-5-nano) + REJECT_AUDIT | THE place fit is decided. His judge reads **Parallel's** cited `icp_evidence` + company context as the company description — no homepage scrape |
+| 3 | ICP qualification | Eric's SCORE (`score-batch.ts`, gpt-5-nano) + REJECT_AUDIT | His judge reads **Parallel's** cited company identity (+ `icp_evidence` only when the tab states an ICP) as the company description — no homepage scrape. With a neutral ICP there is nothing to filter on |
 | 4 | Company / website validation | Eric's VERIFY (`verify-website.ts`) → FINALIZE → PUSH → REPORT (his READY gate) | evidence-aware: passes on **Parallel** evidence when it meets the evidence standard; otherwise his live website check; `verify-fallback.ts` only for sites his check could not read |
 | 5 | Research-gap decision + contradictions | `parallel-signals.ts` (`gapFields`, `planGaps`) | **Parallel** Task research ONLY for required facts still missing / weak / contradictory, those fields only, once |
 | 6 | Recipient selection | spec recipient logic (boss → continuity owner → REVIEW), `quickenrich-people.ts` | — |
@@ -79,7 +82,9 @@ pass 1 = MERGE → SCORE → REJECT_AUDIT (VERIFY/FINALIZE/PUSH held); then, ONL
 qualified, evidence meeting the standard is recorded in `verified.stream.csv` — the file his VERIFY stage
 resumes from — with `website_status = parallel_evidence`; pass 2 = his VERIFY (live website check for
 everyone still unvalidated) → FINALIZE → PUSH → REPORT. **Evidence standard** (`evidenceSufficient`): a canonical
-company domain Parallel itself stated AND cited ICP evidence AND cited company context. Anything less → his live check. A company his judge rejects never gets an evidence validation.
+company domain Parallel itself stated AND cited company identity AND, only when the campaign states an ICP,
+cited ICP evidence. With a neutral ICP (Industry / Segment = Any) no HQ, size, ownership or other profile
+facts are researched or judged. Anything less → his live check. A company his judge rejects never gets an evidence validation.
 
 **No redundant research.** A fact Parallel already returned with a source is used, not re-bought. His judge
 costs cents; no Parallel or Quick Enrich spend is repeated on resume, across rounds, or across campaigns
@@ -164,27 +169,27 @@ gives four things; each maps to one part of the spec and nothing else is invente
 
 | Tab says | Becomes | Notes |
 |---|---|---|
-| **Signal** (+ its source / date window) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` needed to confirm it: the event, its date, the named person and their title, the fact the copy quotes | The research question is "is this signal real and about this company/person?" — not "does the company have the problem" |
+| **Signal** (+ its source, and a date window only if the tab gives one) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` that this particular signal needs to be confirmed as real and about this company / person | Choose the supporting facts for THIS signal; do not reuse another campaign's field list. The research question is "is this real and about them?", not "do they have the problem" |
 | **Send to** (Title(s) / role) | `people.recipient.titles` (priority order). If the role is relative to the signal ("the boss", "the person's manager"), add a field naming that person so research can identify them; keep titles as the way Quick Enrich finds them | Standing rule for announced retirements: the retiree's boss, else a continuity owner (COO/President …), never rank alone |
 | **Copy placeholders** ({name}, {years}, {company} …) | `variables[]`, each from a signal field or the recipient | Required only if the copy cannot be sent without it |
 | **Angle** | nothing — it is copy context | NEVER a rule, never a research question, never a reason to reject |
 
-Rules are only the "is the signal real" checks: the event happened (`exists` / enum), inside the window
-(`date_gte`), and the named person is tied to this company. `on_fail = REJECT` (demonstrably false),
-`on_unknown = REVIEW`. No ICP unless the tab states one (Eric's judge then only checks "real, operating
-company"); no size, geography, ownership, company-type, tenure minimum or "pain" condition unless the tab says so. When the
+Rules express only what would make the signal false or misattributed for this campaign (whatever form that
+takes: an event type, a date window the tab gives, the named person being tied to this company). `on_fail =
+REJECT` (demonstrably false), `on_unknown = REVIEW`. No ICP unless the tab's Industry / Segment state one; no
+size, geography, ownership, company-type, tenure minimum or "pain" condition unless the tab says so. When the
 tab is silent on the signal or on who to send to, ask once; otherwise use the defaults below and continue.
 The spec format itself is unchanged; this is only how the tab's information is used.
 
 - **Use these defaults silently — never ask about them:** `reference_date` = today · `targets` omitted ·
   `generator` = core · `match_limit` omitted (first round = 50) · `signals.processor` = core ·
-  `on_unknown` = REVIEW · `on_fail` = REJECT · `review_policy.max_unresolved` = 1 · `find_email` = true ·
+  `on_unknown` = REVIEW · `on_fail` = REJECT · `find_email` = true ·
   `on_no_recipient` / `on_no_email` = REVIEW · `budget` omitted (global $100 Parallel cap; Quick Enrich uncapped) ·
   ICP comes ONLY from the tab's Industry and Segment, transcribed as written. If they are "Any" or absent,
   the ICP is NEUTRAL: `companies.icp` = "Any company: the tab sets no industry or segment restriction",
   `qualifies` = ["Any company that the signal is about"], `disqualifies` = ["None stated by the campaign"]. Never
   assume a company type (not "operating business", not "real company", nothing) beyond what the tab states ·
-  date window = 90 days back from today when the tab gives none.
+  NO date window unless the tab gives one — never invent "last 90 days" or any other recency cutoff.
 - Transcribe, do not invent. Every field, rule, threshold and variable must trace to words in the tab or a
   default above. Record any operator answer in `source.operator_clarifications[]`.
 
@@ -268,9 +273,10 @@ scored/verified streams, `reject-audit.csv`, `judged.wal.ndjson`) plus `signals.
 
 ## Verdict semantics (identical for every campaign)
 
-- **REJECT** — a rule is demonstrably false, or more facts are unresolved than REVIEW allows.
-- **REVIEW** — otherwise able to qualify; exactly 1 fact (or `review_policy.max_unresolved`)
-  genuinely unresolved. Not a bin for weak research.
+- **REJECT** — only when something is demonstrably false (a rule failed, or a fact the campaign marked
+  `on_unknown = REJECT` could not be established).
+- **REVIEW** — the signal is not demonstrably false but important evidence is still missing or unresolved,
+  however many facts that is. Not a bin for weak research; the reason column names each missing fact.
 - **QUALIFIED** — all rules pass, recipient found, Quick Enrich-verified usable email, affiliation confirmed, every required variable filled.
 - Missing evidence is never positive evidence. `UNCLEAR` stays unclear. Dates known only to
   the year/month are ranges: if the range straddles a cutoff, the rule is unresolved, not passed.
