@@ -61,7 +61,7 @@ people.recipient.from_field     signal field holding the recipient's full name, 
 people.recipient.title_field    signal field holding their title (optional)
 people.recipient.linkedin_field signal field holding their LinkedIn URL (optional; strongest Quick Enrich identity input)
 people.recipient.fallbacks[]    ordered named-person alternates { from_field, title_field?, label }, tried only when
-                                from_field is not established (e.g. a continuity owner when there is no boss)
+                                from_field is not established (whatever fallback THAT campaign's tab defines)
 people.recipient.pick_by_title_when_unnamed   default true. false = never pick someone just for their rank:
                                 no named person ⇒ no recipient ⇒ on_no_recipient
 people.recipient.titles[]       Quick Enrich title filter AND pick priority (first match wins)
@@ -92,25 +92,6 @@ budget              OPTIONAL { max_usd } — per-run Parallel spend cap. Omit it
   against `2024` is UNRESOLVED (the range straddles the cutoff), against `2023` fails,
   against `2024-10` passes.
 - Numbers may arrive as `12`, `12.0` or `"12"` — all compare correctly. `"twelve"` is unresolved.
-- Tenure, join dates, ownership: ask for the precise thing ("earliest date joined the company in
-  any role"), and ask for the source's own wording in a second string field when the number will
-  be quoted in outreach, so a human can audit the quote and not just the number.
-
-## Standing rule — announced-retirement campaigns: who receives it
-
-Compile every announced-retirement tab with this recipient logic (operator rule, 2026-09-21), even
-though the tab only says "Send to: the boss":
-
-1. **Normal case: the retiree's boss.** `retiree_boss_full_name` = stated reporting line, else the
-   executive the role normally reports to (CFO → CEO). `people.recipient.from_field`.
-2. **Retiree is a Chair, Executive Chair, CEO, Owner or Founder with no real boss: do not reject.**
-   Switch to the continuity owner, as `people.recipient.fallbacks[0]`:
-   COO or President first; then a clearly identified successor, operating executive, or Board Chair
-   **only if a source shows they genuinely own the transition**. Capture `continuity_owner_basis`
-   and `continuity_owner_evidence` (the source's wording).
-3. **Never choose someone just because they are the highest-ranking person.** Set
-   `pick_by_title_when_unnamed: false` so Quick Enrich title matching can never stand in for a named person.
-4. **No defensible recipient ⇒ REVIEW** (`on_no_recipient: "REVIEW"`), never REJECT.
-
-Field wording to reuse: see the `retiree_has_real_boss`, `retiree_boss_*` and `continuity_owner_*`
-fields in any compiled announced-retirement spec.
+- Any date, duration or number the copy will quote: ask Parallel for the precise thing the campaign
+  means, and ask for the source's own wording in a second string field, so a human can audit the quote
+  and not just the number.

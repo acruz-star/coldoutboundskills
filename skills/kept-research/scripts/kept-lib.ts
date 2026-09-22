@@ -34,8 +34,8 @@ export type CampaignSpec = {
       from_field?: string | null; title_field?: string | null; titles: string[]; title_excludes?: string[]; max_per_company?: number;
       /** Optional signal field holding the named person's LinkedIn URL — the strongest Quick Enrich identity input. */
       linkedin_field?: string | null;
-      /** Ordered named-person alternates, tried only when from_field is not established (e.g. a
-       *  continuity owner when the retiree has no boss). Each names a person the research identified. */
+      /** Ordered named-person alternates, tried only when from_field is not established. Each names a
+       *  person the research identified; which fallbacks exist is defined by that campaign's tab. */
       fallbacks?: { from_field: string; title_field?: string | null; linkedin_field?: string | null; label: string }[];
       /** Default true (unchanged behaviour): with no named person, pick the best title match from
        *  Quick Enrich. false = never pick someone just for their rank; no named person ⇒ no recipient. */
@@ -80,7 +80,7 @@ export function validateSpec(s: any): string[] {
     need(Array.isArray(d.match_conditions) && d.match_conditions.length, "companies.discovery.match_conditions needs at least one condition");
     // discovery is SIGNAL-ONLY: the ICP, geography, size, industry and exclusions are qualification, decided later by Eric's stages
     // phrases that only occur in ICP / size / geography language, never in a signal (a signal may mention "an employee")
-    const ICP_LANGUAGE = /\b(headquartered in|is headquartered|based in the united states|\d[\d,]*\s*(to|-|–)\s*\d[\d,]*\s*employees|employee count|headcount|annual revenue|is an operating business|operating businesses|privately held|family[- ]owned|industrial manufacturer)\b/i;
+    const ICP_LANGUAGE = /\b(headquartered in|is headquartered|based in the united states|\d[\d,]*\s*(to|-|–)\s*\d[\d,]*\s*employees|employee count|headcount|annual revenue|is an operating business|operating businesses|privately held|publicly traded|family[- ]owned|in the [a-z ]+ industry)\b/i;
     for (const c of d.match_conditions ?? []) need(!/^icp_fit$/.test(c.name) && !ICP_LANGUAGE.test(c.description ?? ""), `companies.discovery.match_conditions "${c.name}" reads like ICP / qualification, not the signal — discovery must be broad; move it to companies.qualifies/disqualifies or rules`);
     need(!ICP_LANGUAGE.test(d.objective ?? ""), "companies.discovery.objective must describe the SIGNAL only (no HQ / size / industry / ownership restrictions — those are qualification)");
     need(d.match_limit == null || (Number.isInteger(d.match_limit) && d.match_limit >= 5 && d.match_limit <= 1000), "companies.discovery.match_limit (first-round size) must be an integer 5-1000 when given");

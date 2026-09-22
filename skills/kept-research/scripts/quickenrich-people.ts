@@ -6,7 +6,7 @@
  *       Parallel's evidence (every rule passes, nothing unresolved). No lookups on REVIEW/REJECT companies.
  *
  * Then, per company:
- *   A. Recipient already NAMED by the research (the boss, else a fallback such as the continuity owner)
+ *   A. Recipient already NAMED by the research (the campaign's primary named person, else a fallback the campaign's spec defines)
  *        → Employee Search straight away, with the strongest identity available:
  *          LinkedIn URL and/or company URL + first name + last name.   [no Contact Finder call]
  *   B. Only a TITLE is known (and the spec allows picking by title)
@@ -42,7 +42,7 @@ export function titleMatches(title: string, pattern: string): boolean {
 }
 
 export type Named = { first_name: string; last_name: string; title: string; linkedin_url: string; label: string };
-/** The person the research NAMED, in the spec's order (primary, then fallbacks). null = nobody named. */
+/** The person the research NAMED, in the spec's order (primary, then whatever fallbacks the campaign's spec defines). null = nobody named. */
 export function namedRecipient(rc: CampaignSpec["people"]["recipient"], sig: Record<string, unknown>): Named | null {
   for (const n of [{ from_field: rc.from_field, title_field: rc.title_field, linkedin_field: rc.linkedin_field, label: "primary" }, ...(rc.fallbacks ?? [])]) {
     if (!n.from_field || isUnknown(sig[n.from_field])) continue;

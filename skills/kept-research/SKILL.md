@@ -9,8 +9,9 @@ description: Run campaign research and lead qualification from a Google Doc camp
 email to be honest, then use Eric's workflow, Parallel's cited evidence and Quick Enrich to establish it. In
 practice that comes down to: is the signal real? is it tied to the right company / person? who should we
 send to? can we verify their contact information? These are the questions to answer, NOT four fixed fields,
-four gates or one checklist: different signals need different supporting facts (a retirement needs a name, a
-date and a tenure; a funding round needs an amount and a date; a new hire needs a role and a start). The
+four gates or one checklist: each signal needs its own supporting facts, worked out from that campaign's tab
+at run time (typically the event itself, who or what it involves, when it happened, and whatever the copy
+quotes). Nothing from a previous campaign carries over as a rule. The
 **Angle** is copy context and never a reason to reject. We do not prove the pain: the email may make a
 reasonable assumption from a real signal and ask. Do not add conditions the tab does not state.
 
@@ -67,7 +68,7 @@ the same order:
 | 3 | ICP qualification | Eric's SCORE (`score-batch.ts`, gpt-5-nano) + REJECT_AUDIT | His judge reads **Parallel's** cited company identity (+ `icp_evidence` only when the tab states an ICP) as the company description — no homepage scrape. With a neutral ICP there is nothing to filter on |
 | 4 | Company / website validation | Eric's VERIFY (`verify-website.ts`) → FINALIZE → PUSH → REPORT (his READY gate) | evidence-aware: passes on **Parallel** evidence when it meets the evidence standard; otherwise his live website check; `verify-fallback.ts` only for sites his check could not read |
 | 5 | Research-gap decision + contradictions | `parallel-signals.ts` (`gapFields`, `planGaps`) | **Parallel** Task research ONLY for required facts still missing / weak / contradictory, those fields only, once |
-| 6 | Recipient selection | spec recipient logic (boss → continuity owner → REVIEW), `quickenrich-people.ts` | — |
+| 6 | Recipient selection | the campaign's own recipient logic from its tab (Title(s), or a named person the research identifies, with any fallback the tab defines), `quickenrich-people.ts` | — |
 | 7 | Contact + verification | Eric's `contacts-merge.ts` + `contacts.ts` EMAILS/REPORT → `leads-final.csv` | **Quick Enrich**, only for companies that passed 3–5: Employee Search directly when the person is named; Contact Finder first when only a title is known |
 | 8 | Final gate + dedupe | `qualify.ts` | — (deterministic; QUALIFIED / REVIEW / REJECT) |
 | 9 | List QA | Eric's `score-list.ts` | — |
@@ -170,14 +171,14 @@ gives four things; each maps to one part of the spec and nothing else is invente
 | Tab says | Becomes | Notes |
 |---|---|---|
 | **Signal** (+ its source, and a date window only if the tab gives one) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` that this particular signal needs to be confirmed as real and about this company / person | Choose the supporting facts for THIS signal; do not reuse another campaign's field list. The research question is "is this real and about them?", not "do they have the problem" |
-| **Send to** (Title(s) / role) | `people.recipient.titles` (priority order). If the role is relative to the signal ("the boss", "the person's manager"), add a field naming that person so research can identify them; keep titles as the way Quick Enrich finds them | Standing rule for announced retirements: the retiree's boss, else a continuity owner (COO/President …), never rank alone |
+| **Send to** (Title(s) / role) | `people.recipient.titles` (priority order). If the tab defines the recipient relative to the signal (a role held by a specific person the research must identify), add a field naming that person and put any fallback the tab describes in `people.recipient.fallbacks` | The recipient logic, and any fallback, comes from THIS tab. No recipient rule from a previous campaign applies |
 | **Copy placeholders** ({name}, {years}, {company} …) | `variables[]`, each from a signal field or the recipient | Required only if the copy cannot be sent without it |
 | **Angle** | nothing — it is copy context | NEVER a rule, never a research question, never a reason to reject |
 
 Rules express only what would make the signal false or misattributed for this campaign (whatever form that
 takes: an event type, a date window the tab gives, the named person being tied to this company). `on_fail =
 REJECT` (demonstrably false), `on_unknown = REVIEW`. No ICP unless the tab's Industry / Segment state one; no
-size, geography, ownership, company-type, tenure minimum or "pain" condition unless the tab says so. When the
+size, geography, ownership, company-type, minimum-threshold or "pain" condition unless the tab says so. When the
 tab is silent on the signal or on who to send to, ask once; otherwise use the defaults below and continue.
 The spec format itself is unchanged; this is only how the tab's information is used.
 
@@ -287,10 +288,6 @@ scored/verified streams, `reject-audit.csv`, `judged.wal.ndjson`) plus `signals.
   unresolved fact → REVIEW; only POSITIVE evidence of a wrong/defunct business (`not_fit`) or a
   parked domain stays rejected. If his lane is NOT READY only because too few sites verified, the run
   continues on the research set; a failed stage still stops it.
-- **Announced-retirement recipient:** the retiree's boss; if the retiree is a Chair / Executive Chair /
-  CEO / Owner / Founder with no real boss, the continuity owner (COO or President first, then a
-  successor / operating executive / Board Chair who genuinely owns the transition). Never the
-  highest-ranking person by default; no defensible recipient → REVIEW. See `references/spec-format.md`.
 - Contradictions are carried as notes; they block only when they name the recipient.
 - A technical failure is retried once with the same question and otherwise reported as
   `RESEARCH_FAILED` — never converted into a rejection.
