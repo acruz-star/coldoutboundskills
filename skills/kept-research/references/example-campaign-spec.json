@@ -1,0 +1,71 @@
+{
+  "spec_version": "1",
+  "campaign_slug": "example-new-finance-leader",
+  "client_slug": "kept",
+  "source": {
+    "doc_id": "EXAMPLE_DOC_ID",
+    "doc_title": "Example campaigns doc",
+    "tab": "Example: new finance leader",
+    "read_at": "2026-01-01T00:00:00Z",
+    "tab_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "reference_date": "2026-01-01",
+  "companies": {
+    "icp": "US-headquartered, owner-led industrial manufacturers with roughly 50 to 200 employees",
+    "qualifies": [
+      "Manufactures, fabricates, machines, assembles or processes physical industrial products",
+      "Describes itself as family-owned, founder-led or privately held"
+    ],
+    "disqualifies": [
+      "Distributors, dealers, retailers or service businesses that do not manufacture",
+      "Primarily aerospace, defense, firearms or software",
+      "Subsidiary of a public company, foreign group or private equity platform"
+    ],
+    "lean": "lean YES when the identity language fits",
+    "thin_evidence_lean": "YES",
+    "discovery": {
+      "objective": "Find companies that hired a new head of finance (CFO, VP Finance or Controller) from outside the company on or after 2025-01-01. Any company, any size, any industry, anywhere: fit is decided later.",
+      "entity_type": "companies",
+      "match_conditions": [
+        { "name": "new_outside_finance_leader", "description": "A dated source shows a CFO, VP Finance or Controller joined the company from a different organization on or after 2025-01-01." }
+      ],
+      "generator": "core",
+      "match_limit": 25
+    },
+    "seeds": [],
+    "exclude_domains": [],
+    "company_list_csv": null
+  },
+  "signals": {
+    "processor": "core",
+    "research_brief": "Establish who currently controls this company, who the new finance leader is and when they first joined the company in any role, and one concrete current piece of company work that could be referenced honestly.",
+    "fields": [
+      { "name": "ownership_type", "type": "enum", "enum": ["family_or_owner", "private_equity", "esop", "public_or_subsidiary", "other"], "description": "Who currently controls the company." },
+      { "name": "owner_full_name", "type": "string", "description": "Full name of the current owner or family principal who is still active in the business." },
+      { "name": "owner_title", "type": "string", "description": "That person's current title at the company." },
+      { "name": "new_leader_full_name", "type": "string", "description": "Full name of the current finance leader who joined from outside." },
+      { "name": "new_leader_company_join_date", "type": "date", "description": "Earliest verified date this person joined the company in ANY role (not the start of their current title)." },
+      { "name": "new_leader_is_outside_hire", "type": "boolean", "description": "True only if a source shows the person came from a different organization; false for promotions or retitles." },
+      { "name": "work_clue", "type": "string", "description": "One specific, current or recent company work detail (expansion, new line, acquisition, program launch) stated in a source." }
+    ]
+  },
+  "people": {
+    "recipient": { "from_field": "owner_full_name", "title_field": "owner_title", "titles": ["owner", "president", "ceo", "chairman"], "title_excludes": ["assistant", "intern"], "max_per_company": 1 },
+    "find_email": true,
+    "on_no_recipient": "REVIEW",
+    "on_no_email": "REVIEW"
+  },
+  "rules": [
+    { "id": "owner_control", "description": "Company is still owner or family controlled", "field": "signals.ownership_type", "op": "eq", "value": "family_or_owner", "on_fail": "REJECT", "on_unknown": "REVIEW" },
+    { "id": "outside_hire", "description": "New leader was hired from outside", "field": "signals.new_leader_is_outside_hire", "op": "is_true", "on_fail": "REJECT", "on_unknown": "REVIEW" },
+    { "id": "recent_entry", "description": "New leader first joined the company on or after 2025-01-01", "field": "signals.new_leader_company_join_date", "op": "date_gte", "value": "2025-01-01", "on_fail": "REJECT", "on_unknown": "REVIEW" },
+    { "id": "work_clue", "description": "A concrete work clue exists", "field": "signals.work_clue", "op": "exists", "on_fail": "REJECT", "on_unknown": "REVIEW" }
+  ],
+  "review_policy": { "max_unresolved": 1 },
+  "variables": [
+    { "name": "new_leader_name", "from": "signals.new_leader_full_name", "required": true },
+    { "name": "work_clue", "from": "signals.work_clue", "required": true },
+    { "name": "first_name", "from": "recipient.first_name", "required": true }
+  ],
+  "budget": { "max_usd": 15 }
+}
