@@ -48,8 +48,11 @@ companies.exclude_domains[]
 companies.company_list_csv      absolute path or null
 
 signals.processor               Parallel Task processor, default "core"
-signals.research_brief          what to establish about each company
+signals.research_brief          what to establish about each company — the minimum that confirms the signal and
+                                supports the email; not extra proof
 signals.fields[]                { name (snake_case), type: string|number|boolean|date|enum, enum?[], description }
+                                Only fields a rule, a required variable or the recipient depends on are ever
+                                researched after discovery; anything else is never asked for again.
                                 description = the literal research question. Every field comes back as
                                 a string; "UNCLEAR" means not established. `company_domain`, `company_context`,
                                 `contradictions` are always added automatically; `icp_evidence` is added only when the campaign

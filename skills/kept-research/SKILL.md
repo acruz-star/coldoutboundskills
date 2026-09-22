@@ -16,6 +16,13 @@ signal, not a fixed checklist. We do not try to prove the pain, urgency, buyer i
 email may make a reasonable assumption from a real signal and ask. `Industry` and `Segment` constrain only
 when the tab explicitly says so. `Angle` is copy-only. Nothing from a previous campaign carries over.
 
+**Minimum sufficient evidence (research, every campaign).** Research exists only to confirm the signal is
+real and tied to the right company / person, to support any fact the email would state, and to identify the
+recipient. If discovery's cited evidence already does that, it is accepted and the run moves on. Research
+never digs for extra proof, unrelated facts, or higher confidence; a fact is asked once, and an honest
+UNCLEAR stays UNCLEAR (→ REVIEW). In code: `gapFields` asks only for a fact a rule, a required variable or the
+recipient depends on, and only when it is still missing. Confidence scores are recorded, never gated on.
+
 **The Google Doc tab says WHAT to look for. This skill's fixed pipeline decides HOW.**
 Every campaign runs the same sequence, the same scripts, the same gate. Nothing about
 the process is improvised per campaign.
@@ -171,7 +178,7 @@ header fields map to the spec as follows; nothing else is invented:
 
 | Tab field | Becomes | Notes |
 |---|---|---|
-| **Signal/s** (+ any source or date window the tab gives) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` this particular signal needs: enough to establish it is real and about this company / person, plus any fact the email would actually state | Use judgment about THIS signal; do not reuse another campaign's field list. Not "do they have the problem" |
+| **Signal/s** (+ any source or date window the tab gives) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` this particular signal needs: the minimum to establish it is real and about this company / person, plus any fact the email would actually state | Use judgment about THIS signal; do not reuse another campaign's field list. Add no field for confidence or curiosity: every field must feed a rule, a stated fact or the recipient. Not "do they have the problem" |
 | **Industry** / **Segment** | `companies.icp`, `qualifies`, `disqualifies`, transcribed as written | Constrain ONLY when the tab explicitly does. "Any" or absent → neutral ICP (see defaults) |
 | **Title(s)** | `people.recipient.titles` (priority order). If the tab defines the recipient relative to the signal (a role held by a specific person the research must identify), add a field naming that person and any fallback the tab describes in `people.recipient.fallbacks` | The recipient logic comes from THIS tab only |
 | **Angle** | nothing — copy-only | NEVER a rule, a research question, or a reason to reject |

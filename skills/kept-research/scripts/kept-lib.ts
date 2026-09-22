@@ -355,9 +355,12 @@ export function mergeSignals(prev: Record<string, unknown> | null, next: Record<
   return out;
 }
 
-/** Fields a company still needs before its rules/variables/recipient can be decided. Empty = no gap. */
+/** MINIMUM SUFFICIENT EVIDENCE. The only facts research ever asks for are the ones a decision needs: a rule
+ *  the campaign set, a fact the email would state (required variable), the recipient's identity, and the
+ *  company's canonical domain. If discovery already established them, nothing is asked. Fields that are merely
+ *  informative, and extra proof for confidence, are never researched. Empty = no gap. */
 export function gapFields(spec: CampaignSpec, content: Record<string, unknown> | null): string[] {
-  if (!content) return [...spec.signals.fields.map((f) => f.name), "company_domain", "company_context"];
+  content ??= {}; // no discovery evidence yet: same rule, so only the decisive facts are asked, not every field
   const need = new Set<string>();
   const sig = (p: string) => (p.startsWith("signals.") ? p.slice(8) : "");
   for (const r of spec.rules) if (r.on_unknown !== "PASS" && sig(r.field) && isUnknown(content[sig(r.field)])) need.add(sig(r.field));
