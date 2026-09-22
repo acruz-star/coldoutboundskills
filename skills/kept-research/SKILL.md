@@ -49,9 +49,11 @@ campaign's Instantly lead list. No approval steps. Nothing is ever activated or 
 
 **Volume (global, every campaign):** inspect **up to 1,000 unique companies** and **keep every lead that
 passes the full qualification standard** — 50, 100, 200 or more. **50 qualified leads is the MINIMUM SUCCESS
-THRESHOLD, not a stopping condition.** The run continues in rounds (each extends the same FindAll run; only
-new companies are judged and researched) until: 1,000 unique companies inspected · discovery exhausted · the
-Parallel spend cap prevents another useful round · another hard safety stop. Fewer than 50 → the run is
+THRESHOLD, not a stopping condition.** The run continues in rounds (each round asks the adaptive Parallel
+Search research loop for more unique companies, with new query/source tactics; only new companies are
+judged and researched) until: 1,000 unique companies inspected · research genuinely exhausted (recent
+tactics stop producing new companies) · the Parallel spend cap prevents another useful round · another hard
+safety stop. Fewer than 50 → the run is
 marked BELOW THE MINIMUM SUCCESS THRESHOLD with the reason. **Never lower a qualification standard to reach 50.**
 Completion report (`output/run-report.json` + "Run report" in `summary.md`): unique companies inspected,
 qualified, review, rejected, duplicates removed, Parallel spend, Quick Enrich lookups (paid / reused),
@@ -72,7 +74,7 @@ the same order:
 | # | Stage | Whose code | What powers it |
 |---|---|---|---|
 | 1 | Campaign spec, rules, judge prompt | `compile-spec.ts` → Eric's `make-judge.ts` + `_TEMPLATE.md` (4 mandatory blocks) | the Google Doc tab |
-| 2 | Discovery (his PULL / `extra_candidates` door) | Eric's `run-lane.ts` PULL+MERGE; feed written by `parallel-discover.ts` | **Parallel** FindAll, **signal-only and broad**: the tab's signal is the only match condition — no ICP, geography, size or exclusion at discovery. The campaign's facts + cited `icp_evidence` + canonical `company_domain` + `company_context` come back in the same run |
+| 2 | Discovery (his PULL / `extra_candidates` door) | Eric's `run-lane.ts` PULL+MERGE; feed written by `parallel-search-discover.ts` | **Parallel Search API**, **signal-only and broad**: an adaptive gpt-5-nano planner searches the tab's signal only — no ICP, geography, size or exclusion at discovery — and changes query wording / source focus from observed yield (never told to prefer one source). The campaign's facts + cited `icp_evidence` + canonical `company_domain` + `company_context` come back from the same Search evidence (+ a focused domain-resolution search when a result names a company but not its site) |
 | 3 | ICP qualification | Eric's SCORE (`score-batch.ts`, gpt-5-nano) + REJECT_AUDIT | His judge reads **Parallel's** cited company identity (+ `icp_evidence` only when the tab states an ICP) as the company description — no homepage scrape. With a neutral ICP there is nothing to filter on |
 | 4 | Company / website validation | Eric's VERIFY (`verify-website.ts`) → FINALIZE → PUSH → REPORT (his READY gate) | evidence-aware: passes on **Parallel** evidence when it meets the evidence standard; otherwise his live website check; `verify-fallback.ts` only for sites his check could not read |
 | 5 | Research-gap decision + contradictions | `parallel-signals.ts` (`gapFields`, `planGaps`) | **Parallel** Task research ONLY for required facts still missing / weak / contradictory, those fields only, once |
@@ -140,7 +142,8 @@ in the Instantly workspace is uploaded; no lookup or upload is ever paid for or 
 | Lane status board | `list-builder/scripts/fleet.ts` (sees kept-research lanes) | Eric, untouched |
 | Spec contract + validation, Parallel/Quick Enrich clients, spend ledger + cap | `scripts/kept-lib.ts` | wrapper |
 | Spec → judge-spec.json + lane.json (Eric's native fields only) | `scripts/compile-spec.ts` | wrapper |
-| Parallel FindAll discovery + evidence in one run → Eric's MERGE feed, `parallel-evidence.csv`, `signals.jsonl`, `evidence.jsonl` | `scripts/parallel-discover.ts` | wrapper |
+| Adaptive Parallel Search discovery + evidence → Eric's MERGE feed, `parallel-evidence.csv`, `signals.jsonl`, `evidence.jsonl` | `scripts/parallel-search-discover.ts` | wrapper |
+| *(legacy, unreachable from `kept-run.ts`)* Parallel FindAll batch discovery | `scripts/parallel-discover.ts` | wrapper, audit-only |
 | Secondary website verification + `research-set.csv` | `scripts/verify-fallback.ts` | wrapper |
 | GAP research only (missing / contradictory required facts; list-sourced companies) | `scripts/parallel-signals.ts` | wrapper |
 | Quick Enrich recipient + verified contact data, gated on the research rules | `scripts/quickenrich-people.ts` | wrapper |
@@ -191,8 +194,8 @@ is silent on `Signal/s` or `Title(s)`, ask once; otherwise use the defaults belo
 format itself is unchanged; this is only how the tab's information is used.
 
 - **Use these defaults silently — never ask about them:** `reference_date` = today · `targets` omitted ·
-  `generator` = core · `match_limit` omitted (first round = 50) · `signals.processor` = core ·
-  `on_unknown` = REVIEW · `on_fail` = REJECT · `find_email` = true ·
+  `match_limit` omitted (first round target = 50 unique companies) · `signals.processor` = core (gap research
+  only — discovery itself uses Parallel Search, mode "fast") · `on_unknown` = REVIEW · `on_fail` = REJECT · `find_email` = true ·
   `on_no_recipient` / `on_no_email` = REVIEW · `budget` omitted (global $100 Parallel cap; Quick Enrich uncapped) ·
   ICP comes ONLY from the tab's Industry and Segment, transcribed as written. If they are "Any" or absent,
   the ICP is NEUTRAL: `companies.icp` = "Any company: the tab sets no industry or segment restriction",
@@ -218,7 +221,8 @@ cd ~/coldoutboundskills/skills/kept-research && npx tsx scripts/kept-run.ts --sp
 ```
 COMPILE    spec → Eric's make-judge.ts → prompt.txt; lane.json
 ── repeated in ROUNDS until a stop condition (50 qualified is a minimum, never a stop) ──
-DISCOVER   Parallel FindAll on the SIGNAL ONLY, cast wide (+ evidence enrichment, same run) → spec/parallel-candidates.csv
+DISCOVER   Adaptive Parallel Search research on Signal/s ONLY → query/source tactics chosen from yield
+           → unique company candidates + cited Search evidence → spec/parallel-candidates.csv
 ERIC 1/2   his run-lane.ts: MERGE → SCORE (ICP judge on Parallel's cited evidence) → REJECT_AUDIT
 ERIC 2/2   his run-lane.ts: VERIFY (evidence-aware, else his live website check) → FINALIZE → PUSH → REPORT
            + verify-fallback.ts only for sites his live check could not read
@@ -229,10 +233,11 @@ GATE       qualify.ts: QUALIFIED / REVIEW / REJECT + dedupe → output/ ; Eric's
 ```
 
 It prints the plan and the cost ceiling, then proceeds. **Recovery is always: re-run the SAME
-command.** Every stage resumes from artifacts; FindAll ids, task-group ids and run ids are
-written to `parallel-runs.jsonl` the moment they exist, so a re-run resumes paid work instead of
-buying it again. Exit codes: 2 = missing info/keys, 5 = spend cap, 4 = ambiguous paid submission
-(operator checks the Parallel dashboard, then re-run with `--adopt=<findall_id>` or `--confirm-not-submitted`).
+command.** Every stage resumes from artifacts; each Search job is keyed by a stable hash of its
+objective + queries + source policy and written to `search-jobs.jsonl` before its result is read, so a
+resumed run never re-submits the same search-job hash, and task-group/run ids for gap research are
+written to `parallel-runs.jsonl` the moment they exist. Exit codes: 2 = missing info/keys, 5 = spend cap,
+4 = ambiguous paid submission (operator checks the Parallel dashboard, then re-run with `--confirm-not-submitted`).
 
 ### Step 4 — Evidence read (before anything leaves the run folder)
 

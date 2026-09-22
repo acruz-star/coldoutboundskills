@@ -134,7 +134,7 @@ export function validateSpec(s: any): string[] {
   }
   for (const v of s.variables ?? []) need(v.name && okPath(v.from), `variable "${v.name}": from "${v.from}" must be signals.<declared field>, company.<col>, or recipient.<col>`);
   need(s.targets?.qualified_leads == null || (Number.isInteger(s.targets.qualified_leads) && s.targets.qualified_leads > 0), "targets.qualified_leads must be a positive integer when given");
-  need(s.targets?.max_companies == null || (Number.isInteger(s.targets.max_companies) && s.targets.max_companies >= 5 && s.targets.max_companies <= 1000), "targets.max_companies must be an integer 5-1000 when given (Parallel FindAll's match ceiling is 1000)");
+  need(s.targets?.max_companies == null || (Number.isInteger(s.targets.max_companies) && s.targets.max_companies >= 5 && s.targets.max_companies <= 1000), "targets.max_companies must be an integer 5-1000 when given (this skill's global company ceiling is 1000)");
   // budget is optional: when the tab is silent the built-in per-run cap applies (see loadSpec)
   need(s.budget?.max_usd == null || Number(s.budget.max_usd) > 0, "budget.max_usd must be a positive number when given");
   need(s.instantly == null || ((s.instantly.lead_list == null || (typeof s.instantly.lead_list === "string" && s.instantly.lead_list.trim())) && (s.instantly.upload == null || typeof s.instantly.upload === "boolean")), "instantly must be { lead_list?: non-empty string, upload?: boolean }");
@@ -243,8 +243,32 @@ export const DEFAULT_MAX_USD = Number(process.env.KEPT_MAX_USD ?? 100); // globa
 
 // Estimates only — used for the pre-run plan and the budget ceiling. Check current
 // Parallel pricing before trusting them; the ledger records estimates, not invoices.
+// FINDALL_EST is legacy-only: it prices parallel-discover.ts (unreachable from the active runtime).
+// The active discovery engine is Parallel Search — see SEARCH_EST below.
 export const FINDALL_EST = { preview: { fixed: 0.1, per_match: 0 }, base: { fixed: 0.25, per_match: 0.03 }, core: { fixed: 2, per_match: 0.15 }, pro: { fixed: 10, per_match: 1 } } as const;
 export const TASK_EST_PER_RUN: Record<string, number> = { lite: 0.005, base: 0.01, core: 0.025, core2x: 0.05, pro: 0.1, ultra: 0.3 };
+
+// ---------- Parallel Search API pricing (active discovery engine) ----------
+// $ per POST /v1/search request, by mode. Source: Parallel's published Search API pricing
+// (checked 2026-09-22: "fast"/"turbo" processor $1/1k requests, "advanced" $5/1k requests).
+// Estimates only, used for the pre-run plan and budget ceiling — the ledger records estimates, not invoices.
+export const SEARCH_EST: Record<"fast" | "turbo" | "advanced", number> = { fast: 0.001, turbo: 0.001, advanced: 0.005 };
+// Planning-only average of usable unique company candidates a single broad search job (1-3 queries,
+// mode=fast) tends to yield. Never a guarantee, never billed on — only used to size the pre-run cost estimate.
+export const SEARCH_EST_COMPANIES_PER_JOB = 6;
+
+// ---------- domain classification (shared by Search discovery + its offline tests) ----------
+// A Search result's url is often the SOURCE of the news, a social profile, or a listings/wire site —
+// never the company's own domain. This filters those out; company_domain still needs to be established
+// by the extractor (or the focused domain-resolution search) from what the result actually states.
+const NOT_A_COMPANY_SITE = /(^|\.)(prnewswire|businesswire|globenewswire|newswire|accesswire|einpresswire|linkedin|facebook|instagram|threads|tiktok|youtube|reddit|x|twitter|wikipedia|bloomberg|reuters|yahoo|sec|greatplacetowork|theorg|crunchbase|zoominfo|glassdoor|indeed|dnb|owler|rocketreach|pitchbook|comparably|zippia|cbinsights|manta|bbb|yelp|mapquest|medium|substack)\.(com|org|gov|co|io|ai)$/;
+const MICROSITE_PREFIX = /^(investors?|ir|about|newsroom|news|press|media|corporate|careers|jobs|blog)\./;
+export function isSocialOrNonCompanyHost(url: string): boolean { return NOT_A_COMPANY_SITE.test(normDomain(url)); }
+/** The URL's own host as a company domain — "" when it is a social/news/listings host or has no usable domain. */
+export function officialCompanyDomain(url: string): string {
+  const d = normDomain(url).replace(MICROSITE_PREFIX, "");
+  return !d.includes(".") || NOT_A_COMPANY_SITE.test(d) ? "" : d;
+}
 
 // ---------- Parallel.ai ----------
 const PARALLEL_BASE = "https://api.parallel.ai";
@@ -296,7 +320,7 @@ export async function quickEnrich(method: "GET" | "POST", path: string, body?: u
  *  SUCCESS THRESHOLD — reaching it never stops the run. Pure, so the policy is testable without spending. */
 export function planNextRound(a: { qualified: number; inspected: number; total: number; target: number; maxCompanies: number; capUsd: number; spentUsd: number; perCompanyUsd: number; exhausted: boolean; matched?: number; hasDiscovery: boolean }): { next: number; stop: string } {
   if (!a.hasDiscovery) return { next: 0, stop: "single pass: the tab supplied a company list / seeds and no discovery signal" };
-  if (a.exhausted) return { next: 0, stop: `discovery exhausted: FindAll matched ${a.matched ?? "fewer"} of the ${a.total} requested` };
+  if (a.exhausted) return { next: 0, stop: `discovery exhausted: adaptive search found ${a.matched ?? "fewer"} of the ${a.total} unique companies targeted` };
   if (a.total >= a.maxCompanies) return { next: 0, stop: `company ceiling reached (${a.maxCompanies} unique companies inspected)` };
   // below the threshold: size from observed yield (floored at 5%); at/above it: keep sweeping in full rounds
   const yieldRate = Math.max(a.qualified / Math.max(a.inspected, 1), 0.05);

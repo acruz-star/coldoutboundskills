@@ -8,9 +8,10 @@
  *     (debug: --until=companies stops after Eric's lane, before signal research)
  *
  * GLOBAL TARGET (every campaign): find 50 qualified, evidence-backed, unique leads; inspect up to
- * 1,000 unique companies to get there. The flow below repeats in ROUNDS — each round extends the
- * same FindAll run and only new companies are judged/researched — until the target is met, the
- * company ceiling is reached, discovery runs dry, or the spend cap leaves no room for another round.
+ * 1,000 unique companies to get there. The flow below repeats in ROUNDS — each round asks the adaptive
+ * Parallel Search research loop for more unique companies and only new ones are judged/researched —
+ * until the target is met, the company ceiling is reached, research is genuinely exhausted, or the
+ * spend cap leaves no room for another round.
  *
  * It runs without approval prompts. It STOPS only when:
  *   - required campaign information is missing (spec fails validation)            exit 2
@@ -21,9 +22,13 @@
  * Fixed sequence — the spec (from the Google Doc tab) only changes WHAT is looked for:
  *
  *   COMPILE    spec → judge-spec.json → Eric's make-judge.ts → prompt.txt; lane.json (native fields only)
- *   DISCOVER   ONE Parallel FindAll run on the campaign SIGNAL only (broad: no ICP / geography / size filter).
- *   +EVIDENCE  The same run returns the campaign's supporting facts, the canonical company domain, company
- *              identity and — only when the campaign states an ICP — the cited facts that bear on it.
+ *   DISCOVER   Adaptive Parallel SEARCH research on the campaign SIGNAL only (broad: no ICP / geography /
+ *              size filter). A lightweight planner (gpt-5-nano) changes query wording and source focus
+ *              from observed yield; Search results are extracted into candidates + cited evidence, and an
+ *              unresolved company's official domain is found with a focused follow-up search.
+ *   +EVIDENCE  The same discovery pass returns the campaign's supporting facts, the canonical company
+ *              domain, company identity and — only when the campaign states an ICP — the cited facts that
+ *              bear on it. Search evidence can fully satisfy a fact; no redundant second proof is bought.
  *   ERIC LANE  EVERY company, however discovered: his MERGE → SCORE (judge reads Parallel's cited evidence as the
  *              description) → REJECT_AUDIT, then VERIFY (passes on sufficient cited evidence; otherwise his live
  *              website check) → FINALIZE → PUSH → REPORT. Nothing is bypassed.
@@ -46,7 +51,7 @@ import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { loadEnv, parseArgs, readCsv } from "../../list-expander/scripts/lib";
-import { loadSpec, buildResearchSet, icpIsNeutral, spentSoFar, readJsonl, FINDALL_EST, TASK_EST_PER_RUN, FIRST_BATCH_COMPANIES, planNextRound } from "./kept-lib";
+import { loadSpec, buildResearchSet, icpIsNeutral, spentSoFar, readJsonl, SEARCH_EST, SEARCH_EST_COMPANIES_PER_JOB, TASK_EST_PER_RUN, FIRST_BATCH_COMPANIES, planNextRound } from "./kept-lib";
 import { compile } from "./compile-spec";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
@@ -79,11 +84,11 @@ function assertJudgeModel(runDir: string, logOffset: number): void {
   if (used.length) console.log(`judge model verified from Eric's log: ${JUDGE_MODEL}`);
 }
 
-/** Companies this run has already bought from FindAll (create size + every extend). */
+/** Unique companies Parallel Search discovery has found so far this run (cumulative across rounds). */
 function discoveryTotal(runDir: string): number {
-  const ev = readJsonl(join(runDir, "parallel-runs.jsonl"));
-  const created = ev.find((e) => e.event === "findall_created");
-  return created ? Number(created.match_limit ?? 0) + ev.filter((e) => e.event === "findall_extended").reduce((a, e) => a + Number(e.additional ?? 0), 0) : 0;
+  const p = join(runDir, "discovery-status.json");
+  if (!existsSync(p)) return 0;
+  try { return Number(JSON.parse(readFileSync(p, "utf8")).unique_company_candidates ?? 0); } catch { return 0; }
 }
 
 /** EVIDENCE-AWARE VALIDATION. For companies HIS judge qualified whose Parallel evidence meets the evidence
@@ -154,7 +159,7 @@ export function seedLaneState(runDir: string, laneJson: string, promptPath: stri
   for (const s of LANE_STAGES) state.stages[s] ??= { status: "pending" };
   Object.assign(state, { config_sha: configSha, kept_prompt_sha: promptSha, kept_feed_sha: feedSha });
   state.stages.PRECHECK = { status: "done", note: "kept-research precheck (Parallel + Quick Enrich + judge keys, prompt present)" };
-  state.stages.LOOKALIKES = { status: "skipped", note: "Prospeo/Exa lookalikes unavailable; discovery is Parallel FindAll" };
+  state.stages.LOOKALIKES = { status: "skipped", note: "Prospeo/Exa lookalikes unavailable; discovery is adaptive Parallel Search research" };
   state.stages.PULL = { status: "done", out_rows: feedRows, note: `Parallel-powered discovery (${feedRows} companies) delivered through extra_candidates; no Prospeo pull` };
   state.stages.ENRICH = { status: "skipped", note: "Prospeo company enrichment unavailable; company context + canonical domain are supplied by Parallel" };
   state.stages.COUNT = { status: "skipped", note: "Prospeo contact count unavailable; contacts are resolved by Quick Enrich in the recipient stage" };
@@ -214,16 +219,18 @@ function main() {
 
   // ---- plan + spend-cap preflight (free) ----
   const d = spec.companies.discovery;
-  const gen = d?.generator ?? "core";
   const proc = spec.signals.processor ?? "core";
   const listN = (spec.companies.company_list_csv ? readCsv(spec.companies.company_list_csv).length : 0) + (spec.companies.seeds ?? []).length;
   const T = spec.targets;
-  const perCompany = (d ? FINDALL_EST[gen].per_match : 0) + (TASK_EST_PER_RUN[proc] ?? 0.1); // discover + research one more company
+  // Search API has no fixed run cost (unlike FindAll): cost scales with search jobs run. Estimate a search
+  // job's average yield (SEARCH_EST_COMPANIES_PER_JOB) plus a 30% allowance for domain-resolution passes.
+  const perCompanySearch = d ? (SEARCH_EST.fast / SEARCH_EST_COMPANIES_PER_JOB) * 1.3 : 0;
+  const perCompany = perCompanySearch + (TASK_EST_PER_RUN[proc] ?? 0.1); // discover + research one more company
   const bought = discoveryTotal(runDir);
   const firstRound = bought || Math.min(d?.match_limit ?? FIRST_BATCH_COMPANIES, T.max_companies);
   const spent = spentSoFar(runDir);
-  const estFirst = bought ? 0 : (d ? FINDALL_EST[gen].fixed + FINDALL_EST[gen].per_match * firstRound : 0) + (TASK_EST_PER_RUN[proc] ?? 0.1) * (firstRound + listN);
-  const affordable = Math.max(0, Math.floor((spec.budget.max_usd - spent.usd - (bought || !d ? 0 : FINDALL_EST[gen].fixed)) / perCompany));
+  const estFirst = bought ? 0 : (d ? perCompanySearch * firstRound : 0) + (TASK_EST_PER_RUN[proc] ?? 0.1) * (firstRound + listN);
+  const affordable = Math.max(0, Math.floor((spec.budget.max_usd - spent.usd) / perCompany));
   const missing = [
     !(process.env.PARALLEL_API_KEY || process.env.PARALLEL_AI_API_KEY) && "PARALLEL_API_KEY",
     !process.env.QUICKENRICH_API_KEY && "QUICKENRICH_API_KEY",
@@ -234,7 +241,7 @@ function main() {
     `source      : "${spec.source.doc_title}" → tab "${spec.source.tab}" (sha ${spec.source.tab_sha256.slice(0, 12)})`,
     `run dir     : ${runDir}`,
     `volume      : inspect up to ${T.max_companies} unique companies and KEEP EVERY lead that qualifies. ${T.qualified_leads} qualified = minimum success threshold, NOT a stop (${T.source})`,
-    `parallel    : ${d ? `ONE FindAll run (${gen}), SIGNAL-ONLY and broad: ${d.match_conditions.map((c) => c.name).join(", ")}; no ICP/geo/size filter at discovery. Returns ${spec.signals.fields.length} supporting facts + company identity + canonical domain${icpIsNeutral(spec) ? " (no ICP facts: the campaign sets no company restriction)" : " + icp_evidence"} (${proc}), in rounds — ${bought ? `${bought} already bought, resuming` : `first round ${firstRound}`}; later rounds extend the same run` : "none (company list / seeds only — single pass)"}${listN ? ` + ${listN} listed/seed companies` : ""}`,
+    `discovery   : ${d ? `Adaptive Parallel SEARCH research on Signal/s ONLY, broad: ${d.match_conditions.map((c) => c.name).join(", ")}; no ICP/geo/size filter. A gpt-5-nano planner chooses query wording + source focus (open web by default) from observed yield, never a fixed source. Search evidence + a focused domain-resolution pass establish company identity, canonical domain${icpIsNeutral(spec) ? " (no ICP facts: the campaign sets no company restriction)" : " + cited icp_evidence"}; gap research (${proc}) covers only what's left. ${bought ? `${bought} unique companies already found, resuming` : `first round target ${firstRound}`}; later rounds keep researching with new tactics` : "none (company list / seeds only — single pass)"}${listN ? ` + ${listN} listed/seed companies` : ""}`,
     `eric's lane : EVERY company runs his MERGE → SCORE (ICP judge, ${judge || "NOT CONFIGURED"}) → REJECT_AUDIT → VERIFY → FINALIZE → REPORT. VERIFY is evidence-aware: passes on sufficient cited Parallel evidence, else his live website check`,
     `gaps        : extra Parallel research ONLY for required facts still missing / contradictory (asked once, missing fields only)`,
     `people      : Quick Enrich — ${spec.people.recipient.from_field ? `person named in signals.${spec.people.recipient.from_field}` : `titles [${spec.people.recipient.titles.join(", ")}]`}; only after the research rules pass; Employee Search directly when the person is named (1 credit), Contact Finder first only for title-only`,
@@ -255,8 +262,8 @@ function main() {
   // ---- execute in ROUNDS until the target is met. Same fixed order every round; every step resumable. ----
   let total = firstRound, stopReason = "";
   for (let round = 1; ; round++) {
-    console.log(`\n══ ROUND ${round} — discovery total ${d ? total : 0} ══\n▶ DISCOVER + EVIDENCE (Parallel: companies matching the SIGNAL, with supporting facts, identity and canonical domain — one run)`);
-    const disc = tsx(join(HERE, "parallel-discover.ts"), [`--spec=${specCopy}`, `--run-dir=${runDir}`, `--total=${total}`, ...(args.adopt ? [`--adopt=${args.adopt}`] : []), ...(args["confirm-not-submitted"] ? ["--confirm-not-submitted"] : [])]);
+    console.log(`\n══ ROUND ${round} — discovery target ${d ? total : 0} ══\n▶ DISCOVER (adaptive Parallel Search research on Signal/s → query/source tactics chosen from yield → unique company candidates → cited Search evidence)`);
+    const disc = tsx(join(HERE, "parallel-search-discover.ts"), [`--spec=${specCopy}`, `--run-dir=${runDir}`, `--total=${total}`, ...(args["confirm-not-submitted"] ? ["--confirm-not-submitted"] : [])]);
     if (disc === 5 && round > 1) { stopReason = "spend cap: the next discovery round would exceed it"; break; }
     if (disc !== 0) { console.error(`\nDISCOVER stopped (exit ${disc}). Read the message above; re-running the same command resumes without paying twice.`); process.exit(disc); }
     const discovered = readCsv(parallelCandidates).length;
