@@ -5,15 +5,16 @@ description: Run campaign research and lead qualification from a Google Doc camp
 
 # kept-research — campaign research on Eric's list-builder, with Parallel + Quick Enrich
 
-**The reasoning goal (every campaign):** work out, from the campaign tab, what has to be true for the
-email to be honest, then use Eric's workflow, Parallel's cited evidence and Quick Enrich to establish it. In
-practice that comes down to: is the signal real? is it tied to the right company / person? who should we
-send to? can we verify their contact information? These are the questions to answer, NOT four fixed fields,
-four gates or one checklist: each signal needs its own supporting facts, worked out from that campaign's tab
-at run time (typically the event itself, who or what it involves, when it happened, and whatever the copy
-quotes). Nothing from a previous campaign carries over as a rule. The
-**Angle** is copy context and never a reason to reject. We do not prove the pain: the email may make a
-reasonable assumption from a real signal and ask. Do not add conditions the tab does not state.
+**The five campaign header fields are the source of truth: Industry, Segment, Title(s), Angle, Signal/s.**
+`Signal/s` drives broad discovery: find as many plausible companies as possible that appear to have the
+signal, within the run limits, without requiring them to qualify first. Then Eric's workflow and Parallel
+research take each candidate to a reasonable, defensible place where the email can be sent: enough research
+to establish that the signal is real and tied to the correct company / person, to support any factual
+personalization the email would actually state, to resolve the intended recipient from `Title(s)`, and to
+verify that recipient through Quick Enrich. That is the goal, reached with judgment about the specific
+signal, not a fixed checklist. We do not try to prove the pain, urgency, buyer intent or the Angle: the
+email may make a reasonable assumption from a real signal and ask. `Industry` and `Segment` constrain only
+when the tab explicitly says so. `Angle` is copy-only. Nothing from a previous campaign carries over.
 
 **The Google Doc tab says WHAT to look for. This skill's fixed pipeline decides HOW.**
 Every campaign runs the same sequence, the same scripts, the same gate. Nothing about
@@ -165,22 +166,22 @@ How his Prospeo-bound orchestrator runs without being patched:
 
 ### Step 2 — Compile the tab into `campaign-spec.json` (keep it this simple)
 
-Format: `references/spec-format.md`. Worked example: `references/example-campaign-spec.json`. A campaign tab
-gives four things; each maps to one part of the spec and nothing else is invented:
+Format: `references/spec-format.md`. Worked example: `references/example-campaign-spec.json`. The tab's five
+header fields map to the spec as follows; nothing else is invented:
 
-| Tab says | Becomes | Notes |
+| Tab field | Becomes | Notes |
 |---|---|---|
-| **Signal** (+ its source, and a date window only if the tab gives one) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` that this particular signal needs to be confirmed as real and about this company / person | Choose the supporting facts for THIS signal; do not reuse another campaign's field list. The research question is "is this real and about them?", not "do they have the problem" |
-| **Send to** (Title(s) / role) | `people.recipient.titles` (priority order). If the tab defines the recipient relative to the signal (a role held by a specific person the research must identify), add a field naming that person and put any fallback the tab describes in `people.recipient.fallbacks` | The recipient logic, and any fallback, comes from THIS tab. No recipient rule from a previous campaign applies |
-| **Copy placeholders** ({name}, {years}, {company} …) | `variables[]`, each from a signal field or the recipient | Required only if the copy cannot be sent without it |
-| **Angle** | nothing — it is copy context | NEVER a rule, never a research question, never a reason to reject |
+| **Signal/s** (+ any source or date window the tab gives) | `companies.discovery` (signal-only, cast wide) and the `signals.fields` this particular signal needs: enough to establish it is real and about this company / person, plus any fact the email would actually state | Use judgment about THIS signal; do not reuse another campaign's field list. Not "do they have the problem" |
+| **Industry** / **Segment** | `companies.icp`, `qualifies`, `disqualifies`, transcribed as written | Constrain ONLY when the tab explicitly does. "Any" or absent → neutral ICP (see defaults) |
+| **Title(s)** | `people.recipient.titles` (priority order). If the tab defines the recipient relative to the signal (a role held by a specific person the research must identify), add a field naming that person and any fallback the tab describes in `people.recipient.fallbacks` | The recipient logic comes from THIS tab only |
+| **Angle** | nothing — copy-only | NEVER a rule, a research question, or a reason to reject |
+| Copy placeholders in the tab ({name}, {company} …) | `variables[]`, each from a signal field or the recipient | Required only if the email cannot be sent without it |
 
 Rules express only what would make the signal false or misattributed for this campaign (whatever form that
-takes: an event type, a date window the tab gives, the named person being tied to this company). `on_fail =
-REJECT` (demonstrably false), `on_unknown = REVIEW`. No ICP unless the tab's Industry / Segment state one; no
-size, geography, ownership, company-type, minimum-threshold or "pain" condition unless the tab says so. When the
-tab is silent on the signal or on who to send to, ask once; otherwise use the defaults below and continue.
-The spec format itself is unchanged; this is only how the tab's information is used.
+takes for this signal). `on_fail = REJECT` (demonstrably false), `on_unknown = REVIEW`. No size, geography,
+ownership, company-type, threshold, pain, urgency or intent condition unless the tab states it. When the tab
+is silent on `Signal/s` or `Title(s)`, ask once; otherwise use the defaults below and continue. The spec
+format itself is unchanged; this is only how the tab's information is used.
 
 - **Use these defaults silently — never ask about them:** `reference_date` = today · `targets` omitted ·
   `generator` = core · `match_limit` omitted (first round = 50) · `signals.processor` = core ·
